@@ -1,0 +1,24 @@
+{
+    "name": "wibiesana/padi-core",
+    "description": "Core engine for Padi REST API Framework",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Wibiesana",
+            "email": "wibiesana@yahoo.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.4",
+        "firebase/php-jwt": "^7.0",
+        "monolog/monolog": "^3.10",
+        "phpmailer/phpmailer": "^7.0",
+        "predis/predis": "^3.3"
+    },
+    "autoload": {
+        "psr-4": {
+            "Core\\": "src/"
+        }
+    }
+}
