@@ -14,7 +14,9 @@ use PDO;
  */
 class Query
 {
+    public const VERSION = '1.0.4';
     protected ?PDO $db = null;
+    protected ?string $connectionName = null;
     protected string|array $select = ['*'];
     protected ?string $from = null;
     protected array $where = [];
@@ -26,10 +28,21 @@ class Query
     protected ?int $limit = null;
     protected ?int $offset = null;
     protected bool $distinct = false;
+    protected bool $autoIlike = true;
 
     public function __construct(?string $connection = null)
     {
+        $this->connectionName = $connection;
         $this->db = Database::connection($connection);
+    }
+
+    /**
+     * Enable or disable automatic ILIKE conversion for PostgreSQL
+     */
+    public function autoIlike(bool $value = true): self
+    {
+        $this->autoIlike = $value;
+        return $this;
     }
 
     /**
@@ -119,12 +132,73 @@ class Query
     }
 
     /**
+     * Add WHERE IN condition
+     */
+    public function whereIn(string $column, array $values): self
+    {
+        return $this->andWhere(['IN', $column, $values]);
+    }
+
+    /**
+     * Add WHERE NOT IN condition
+     */
+    public function whereNotIn(string $column, array $values): self
+    {
+        return $this->andWhere(['NOT IN', $column, $values]);
+    }
+
+    /**
+     * Add WHERE BETWEEN condition
+     */
+    public function whereBetween(string $column, mixed $start, mixed $end): self
+    {
+        return $this->andWhere(['BETWEEN', $column, [$start, $end]]);
+    }
+
+    /**
+     * Add WHERE NOT BETWEEN condition
+     */
+    public function whereNotBetween(string $column, mixed $start, mixed $end): self
+    {
+        // Not natively supported in parseCondition yet, but easy to add via string
+        $p1 = ":nbet_" . count($this->params) . "_1";
+        $p2 = ":nbet_" . count($this->params) . "_2";
+        $this->params[$p1] = $start;
+        $this->params[$p2] = $end;
+        return $this->andWhere("$column NOT BETWEEN $p1 AND $p2");
+    }
+
+    /**
+     * Add WHERE NULL condition
+     */
+    public function whereNull(string $column): self
+    {
+        return $this->andWhere("$column IS NULL");
+    }
+
+    /**
+     * Add WHERE NOT NULL condition
+     */
+    public function whereNotNull(string $column): self
+    {
+        return $this->andWhere("$column IS NOT NULL");
+    }
+
+    /**
      * Add parameters for binding
      */
     public function addParams(array $params): self
     {
         $this->params = array_merge($this->params, $params);
         return $this;
+    }
+
+    /**
+     * Get current parameters
+     */
+    public function getParams(): array
+    {
+        return $this->params;
     }
 
     /**
@@ -160,6 +234,23 @@ class Query
             $this->orderBy = [$columns];
         } else {
             $this->orderBy = $columns;
+        }
+        return $this;
+    }
+
+    /**
+     * Add to the existing ORDER BY clause
+     */
+    public function addOrderBy(string|array $columns): self
+    {
+        if (is_string($columns)) {
+            $columns = [$columns];
+        }
+
+        if (empty($this->orderBy)) {
+            $this->orderBy = $columns;
+        } else {
+            $this->orderBy = array_merge($this->orderBy, $columns);
         }
         return $this;
     }
@@ -203,6 +294,27 @@ class Query
     {
         $this->offset = $offset;
         return $this;
+    }
+
+    /**
+     * Paginate results
+     * @return array [data, total, per_page, current_page, last_page]
+     */
+    public function paginate(int $perPage = 25, int $page = 1): array
+    {
+        $this->limit($perPage);
+        $this->offset(($page - 1) * $perPage);
+
+        $total = $this->count();
+        $data = $this->all();
+
+        return [
+            'data' => $data,
+            'total' => $total,
+            'per_page' => $perPage,
+            'current_page' => $page,
+            'last_page' => (int) ceil($total / $perPage)
+        ];
     }
 
     /**
@@ -276,6 +388,151 @@ class Query
     }
 
     /**
+     * Calculate the sum of the specified column
+     */
+    public function sum(string $q): mixed
+    {
+        $oldSelect = $this->select;
+        $this->select = ["SUM($q)"];
+        $result = $this->scalar();
+        $this->select = $oldSelect;
+        return $result;
+    }
+
+    /**
+     * Calculate the average of the specified column
+     */
+    public function average(string $q): mixed
+    {
+        $oldSelect = $this->select;
+        $this->select = ["AVG($q)"];
+        $result = $this->scalar();
+        $this->select = $oldSelect;
+        return $result;
+    }
+
+    /**
+     * Alias for average()
+     */
+    public function avg(string $q): mixed
+    {
+        return $this->average($q);
+    }
+
+    /**
+     * Find the minimum value of the specified column
+     */
+    public function min(string $q): mixed
+    {
+        $oldSelect = $this->select;
+        $this->select = ["MIN($q)"];
+        $result = $this->scalar();
+        $this->select = $oldSelect;
+        return $result;
+    }
+
+    /**
+     * Find the maximum value of the specified column
+     */
+    public function max(string $q): mixed
+    {
+        $oldSelect = $this->select;
+        $this->select = ["MAX($q)"];
+        $result = $this->scalar();
+        $this->select = $oldSelect;
+        return $result;
+    }
+
+    /**
+     * Execute DELETE query based on conditions
+     * @return int Number of affected rows
+     */
+    public function delete(): int
+    {
+        if (empty($this->from)) {
+            throw new \Exception("Table name (from) must be specified for delete operation.");
+        }
+
+        $sql = 'DELETE FROM ' . $this->from;
+        if (!empty($this->where)) {
+            $sql .= ' WHERE ' . $this->buildWhere($this->where);
+        }
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($this->params);
+        Database::logQuery($sql, $this->params);
+
+        return $stmt->rowCount();
+    }
+
+    /**
+     * Execute UPDATE query based on conditions
+     * @param array $data Attribute values (name => value) to be saved
+     * @return int Number of affected rows
+     */
+    public function update(array $data): int
+    {
+        if (empty($this->from)) {
+            throw new \Exception("Table name (from) must be specified for update operation.");
+        }
+
+        if (empty($data)) {
+            return 0;
+        }
+
+        $set = [];
+        foreach ($data as $column => $value) {
+            $paramName = ":upd_" . str_replace('.', '_', (string)$column);
+            $set[] = "$column = $paramName";
+            $this->params[$paramName] = $value;
+        }
+
+        $sql = 'UPDATE ' . $this->from . ' SET ' . implode(', ', $set);
+        if (!empty($this->where)) {
+            $sql .= ' WHERE ' . $this->buildWhere($this->where);
+        }
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($this->params);
+        Database::logQuery($sql, $this->params);
+
+        return $stmt->rowCount();
+    }
+
+    /**
+     * Execute INSERT query
+     * @param array $data Attribute values (name => value) to be inserted
+     * @return string|int Last inserted ID
+     */
+    public function insert(array $data)
+    {
+        if (empty($this->from)) {
+            throw new \Exception("Table name (from) must be specified for insert operation.");
+        }
+
+        if (empty($data)) {
+            return false;
+        }
+
+        $columns = [];
+        $placeholders = [];
+        foreach ($data as $column => $value) {
+            $columns[] = $column;
+            $paramName = ":ins_" . str_replace('.', '_', (string)$column);
+            $placeholders[] = $paramName;
+            $this->params[$paramName] = $value;
+        }
+
+        $sql = 'INSERT INTO ' . $this->from . ' (' . implode(', ', $columns) . ') VALUES (' . implode(', ', $placeholders) . ')';
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($this->params);
+        Database::logQuery($sql, $this->params);
+
+        return $this->db->lastInsertId();
+    }
+
+    /**
      * Build the final SQL string
      */
     public function buildSql(): string
@@ -339,6 +596,25 @@ class Query
             $sql .= ' OFFSET ' . $this->offset;
         }
 
+        return $sql;
+    }
+
+    /**
+     * Get the raw SQL with parameters interpolated (for debugging)
+     */
+    public function rawSql(): string
+    {
+        $sql = $this->buildSql();
+        foreach ($this->params as $key => $value) {
+            if (is_string($value)) {
+                $value = "'" . addslashes($value) . "'";
+            } elseif ($value === null) {
+                $value = 'NULL';
+            } elseif (is_bool($value)) {
+                $value = $value ? '1' : '0';
+            }
+            $sql = str_replace($key, (string)$value, $sql);
+        }
         return $sql;
     }
 
@@ -425,8 +701,14 @@ class Query
                 $value = "%$value%";
             }
 
+            $currentOperator = $operator;
+            // Handle PostgreSQL ILIKE
+            if ($this->autoIlike && DatabaseManager::getDriver($this->connectionName) === 'pgsql') {
+                $currentOperator = ($operator === 'LIKE') ? 'ILIKE' : 'NOT ILIKE';
+            }
+
             $this->params[$paramName] = $value;
-            return "$column $operator $paramName";
+            return "$column $currentOperator $paramName";
         }
 
         if ($operator === 'AND' || $operator === 'OR') {
