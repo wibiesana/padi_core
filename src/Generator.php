@@ -624,10 +624,9 @@ PHP;
         $relationsStr = "";
         $joins = [];
 
-        // Arrays to hold search conditions and bindings
-        // Structure: ['col' => 'table.col', 'param' => ':p1']
-        $searchConfig = [];
-        $paramCounter = 0;
+        // Arrays to hold search fields and join calls for Core\Query
+        $searchFields = [];
+        $joinCalls = [];
 
         // Get actual Foreign Keys from Database
         $foreignKeys = $this->getTableForeignKeys($tableName);
@@ -660,18 +659,14 @@ PHP;
             $relationsStr .= "        return \$this->belongsTo(\\App\\Models\\{$relatedModel}::class, '{$column}');\n";
             $relationsStr .= "    }\n";
 
-            // Add join for search with Alias
-            $joins[] = "LEFT JOIN {$relatedTable} AS {$alias} ON {$tableName}.{$column} = {$alias}.id";
+            // Add join call for Query
+            $joinCalls[] = "->leftJoin('{$relatedTable} AS {$alias}', '{$tableName}.{$column} = {$alias}.id')";
 
             // Identify display column for the related table
             $displayCol = $this->getDisplayColumn($relatedTable);
 
-            // Add related name to search scope using Alias
-            $paramCounter++;
-            $searchConfig[] = [
-                'clause' => "{$alias}.{$displayCol} LIKE_OP :k{$paramCounter}",
-                'param' => ":k{$paramCounter}"
-            ];
+            // Add related name to search fields using Alias
+            $searchFields[] = "['LIKE', '{$alias}.{$displayCol}', \$keyword]";
         }
 
         // 2. Analyze Local Text Columns for Search
@@ -680,54 +675,20 @@ PHP;
         foreach ($fillable as $column) {
             foreach ($textColumnKeywords as $keyword) {
                 if (stripos($column, $keyword) !== false) {
-                    $paramCounter++;
-                    $searchConfig[] = [
-                        'clause' => "{$tableName}.{$column} LIKE_OP :k{$paramCounter}",
-                        'param' => ":k{$paramCounter}"
-                    ];
+                    $searchFields[] = "['LIKE', '{$tableName}.{$column}', \$keyword]";
                     break;
                 }
             }
         }
 
         // Fallback if no search fields found
-        if (empty($searchConfig) && !empty($fillable)) {
-            $paramCounter++;
-            $searchConfig[] = [
-                'clause' => "{$tableName}.id LIKE_OP :k{$paramCounter}",
-                'param' => ":k{$paramCounter}"
-            ];
+        if (empty($searchFields) && !empty($fillable)) {
+            $searchFields[] = "['LIKE', '{$tableName}.id', \$keyword]";
         }
 
-        // Build SQL parts - Align glue with indentation (21 spaces approx)
-        $whereClauses = array_column($searchConfig, 'clause');
-        $whereClause = implode(" OR ", $whereClauses);
-
-        // Use placeholder for LIKE operator to support ILIKE on Postgres
-        // This will be replaced at runtime in the generated code
-        $whereClause = str_replace('LIKE_OP', '{$like}', $whereClause);
-
-        $joinClause = implode("\n                     ", $joins);
-
-        // Build binding code for searchPaginate (PDO execution array)
-        $executeBindings = [];
-        foreach ($searchConfig as $conf) {
-            $key = ltrim($conf['param'], ':');
-            $executeBindings[] = "'{$key}' => \$searchTerm";
-        }
-        $executeStr = implode(",\n            ", $executeBindings);
-
-        // Single line version for logging comments to be safe
-        $executeStrSingle = implode(", ", $executeBindings);
-
-        // Build bindValue code (for standard prepared statement)
-        $bindValueStr = "";
-        foreach ($searchConfig as $conf) {
-            $bindValueStr .= "        \$stmt->bindValue('{$conf['param']}', \$searchTerm);\n";
-        }
-
-        // Build Params string for simple search method (query helper)
-        $paramsStr = implode(",\n            ", $executeBindings);
+        // Format Join calls and Search fields for template
+        $joinCallsStr = !empty($joinCalls) ? implode("\n            ", $joinCalls) : "";
+        $searchFieldsStr = implode(",\n                ", $searchFields);
 
         // searchPaginate method
         $searchPaginateMethod = <<<PHP
@@ -736,64 +697,36 @@ PHP;
      */
     public function searchPaginate(string \$keyword, int \$page = 1, int \$perPage = 25, ?string \$orderBy = null): array
     {
-        \$like = \$this->getLikeOperator();
-        \$searchTerm = "%\$keyword%";
-        \$offset = (\$page - 1) * \$perPage;
+        \$query = \Core\Query::find()
+            ->select("{\$this->table}.*")
+            ->from(\$this->table)
+            {$joinCallsStr}
+            ->where(['OR',
+                {$searchFieldsStr}
+            ]);
 
-        // 1. Get Total Count
-        \$countSql = "SELECT COUNT(*) as total 
-                     FROM {\$this->table} 
-                     {$joinClause}
-                     WHERE {$whereClause}";
-                     
-        \$countStmt = \$this->db->prepare(\$countSql);
-        \$countStmt->execute([
-            {$executeStr}
-        ]);
-        // Database::logQuery(\$countSql, [{$executeStrSingle}]); // Optional logging
-
-        \$total = \$countStmt->fetch(\PDO::FETCH_ASSOC)['total'];
-
-        // 2. Prepare Order Clause
-        \$orderClause = '';
-        if (\$orderBy && preg_match('/^[a-zA-Z0-9_. ]+$/', \$orderBy)) {
-            \$orderClause = " ORDER BY {\$orderBy}";
+        if (\$orderBy) {
+            \$query->orderBy(\$orderBy);
+        } else {
+            \$query->orderBy("{\$this->table}.{\$this->primaryKey} DESC");
         }
 
-        if (empty(\$orderClause)) {
-            \$orderClause = " ORDER BY {\$this->table}.{\$this->primaryKey} DESC";
-        }
+        \$result = \$query->paginate(\$perPage, \$page);
 
-        // 3. Get Data
-        \$sql = "SELECT {\$this->table}.* 
-                FROM {\$this->table} 
-                {$joinClause}
-                WHERE {$whereClause}
-                {\$orderClause}
-                LIMIT :limit OFFSET :offset";
-
-        \$stmt = \$this->db->prepare(\$sql);
-{$bindValueStr}        \$stmt->bindValue(':limit', \$perPage, \PDO::PARAM_INT);
-        \$stmt->bindValue(':offset', \$offset, \PDO::PARAM_INT);
-        \$stmt->execute();
-        // Database::logQuery(\$sql, ['keyword' => \$searchTerm]); // Optional logging
-        
-        \$results = \$stmt->fetchAll(\PDO::FETCH_ASSOC);
-
-        // 4. Eager load if needed (optional)
-        if (!empty(\$results)) {
-            \$this->loadRelations(\$results);
+        if (!empty(\$result['data'])) {
+            \$this->loadRelations(\$result['data']);
+            \$result['data'] = \$this->hideFields(\$result['data']);
         }
 
         return [
-            'data' => \$this->hideFields(\$results),
+            'data' => \$result['data'],
             'meta' => [
-                'total' => (int)\$total,
-                'per_page' => \$perPage,
-                'current_page' => \$page,
-                'last_page' => (int)ceil(\$total / \$perPage),
-                'from' => \$offset + 1,
-                'to' => min(\$offset + \$perPage, \$total)
+                'total' => (int)\$result['total'],
+                'per_page' => \$result['per_page'],
+                'current_page' => \$result['current_page'],
+                'last_page' => \$result['last_page'],
+                'from' => (\$result['current_page'] - 1) * \$result['per_page'] + 1,
+                'to' => min(\$result['current_page'] * \$result['per_page'], \$result['total'])
             ]
         ];
     }
@@ -827,31 +760,26 @@ class {$modelName} extends ActiveRecord
      */
     public function search(string \$keyword, ?string \$orderBy = null): array
     {
-        \$like = \$this->getLikeOperator();
-        \$searchTerm = "%\$keyword%";
-        
-        // Prepare Order Clause
-        \$orderClause = '';
-        if (\$orderBy && preg_match('/^[a-zA-Z0-9_. ]+$/', \$orderBy)) {
-            \$orderClause = " ORDER BY {\$orderBy}";
+        \$query = \Core\Query::find()
+            ->select("{\$this->table}.*")
+            ->from(\$this->table)
+            {$joinCallsStr}
+            ->where(['OR',
+                {$searchFieldsStr}
+            ])
+            ->limit(100);
+
+        if (\$orderBy) {
+            \$query->orderBy(\$orderBy);
+        } else {
+            \$query->orderBy("{\$this->table}.{\$this->primaryKey} DESC");
         }
 
-        if (empty(\$orderClause)) {
-            \$orderClause = " ORDER BY {\$this->table}.{\$this->primaryKey} DESC";
-        }
-
-        \$sql = "SELECT {\$this->table}.* FROM {\$this->table} 
-                {$joinClause}
-                WHERE {$whereClause}
-                {\$orderClause}
-                LIMIT 100";
-        
-        \$results = \$this->query(\$sql, [
-            {$paramsStr}
-        ]);
+        \$results = \$query->all();
 
         if (!empty(\$results)) {
             \$this->loadRelations(\$results);
+            \$results = \$this->hideFields(\$results);
         }
 
         return \$results;
