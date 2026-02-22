@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Core;
+namespace Wibiesana\Padi\Core;
 
 /**
  * Code Generator - Similar to Yii's Gii
@@ -51,7 +51,6 @@ class Generator
 
         $modelName = $this->tableNameToModelName($tableName);
         $namespace = $options['namespace'] ?? 'App\\Models';
-        $baseNamespace = $namespace . '\\Base';
         $fillable = $options['fillable'] ?? [];
         $hidden = $options['hidden'] ?? [];
 
@@ -71,20 +70,11 @@ class Generator
         // Detect Primary Key
         $primaryKey = $this->detectPrimaryKey($tableName);
 
-        // 1. Generate Base ActiveRecord (Always overwrite)
-        $baseTemplate = $this->getBaseModelTemplate($modelName, $tableName, $fillable, $hidden, $baseNamespace, $primaryKey);
-        $baseDir = $this->baseDir . '/app/Models/Base';
-        if (!is_dir($baseDir)) mkdir($baseDir, 0755, true);
-
-        $baseFilePath = $baseDir . '/' . $modelName . '.php';
-        file_put_contents($baseFilePath, $baseTemplate);
-        echo "✓ Base ActiveRecord {$modelName} created/updated at {$baseFilePath}\n";
-
-        // 2. Generate Concrete ActiveRecord (Only if not exists)
-        $template = $this->getModelTemplate($modelName, $namespace, $baseNamespace);
+        // Generate Model (Only if not exists, or if force is set)
+        $template = $this->getModelTemplate($modelName, $tableName, $fillable, $hidden, $namespace, $primaryKey);
         $filePath = $this->baseDir . '/app/Models/' . $modelName . '.php';
 
-        if (file_exists($filePath)) {
+        if (file_exists($filePath) && !($options['force'] ?? false)) {
             echo "ℹ️  ActiveRecord {$modelName} already exists. Skipping to preserve custom logic.\n";
         } else {
             file_put_contents($filePath, $template);
@@ -109,7 +99,6 @@ class Generator
 
         $controllerName = $modelName . 'Controller';
         $namespace = $options['namespace'] ?? 'App\\Controllers';
-        $baseNamespace = $namespace . '\\Base';
         $modelNamespace = $options['model_namespace'] ?? 'App\\Models';
 
         // 1. Get schema and validation rules
@@ -117,20 +106,11 @@ class Generator
         $schema = $this->getTableSchema($tableName);
         $validationRules = $this->generateValidationRules($schema, $tableName);
 
-        // 2. Generate Base Controller (Always overwrite)
-        $baseTemplate = $this->getBaseControllerTemplate($modelName, $controllerName, $baseNamespace, $modelNamespace, $validationRules);
-        $baseDir = $this->baseDir . '/app/Controllers/Base';
-        if (!is_dir($baseDir)) mkdir($baseDir, 0755, true);
-
-        $baseFilePath = $baseDir . '/' . $controllerName . '.php';
-        file_put_contents($baseFilePath, $baseTemplate);
-        echo "✓ Base Controller {$controllerName} created/updated at {$baseFilePath}\n";
-
-        // 3. Generate Concrete Controller (Only if not exists)
-        $template = $this->getControllerTemplate($controllerName, $namespace, $baseNamespace);
+        // 2. Generate Controller (Only if not exists, or if force is set)
+        $template = $this->getControllerTemplate($modelName, $controllerName, $namespace, $modelNamespace, $validationRules);
         $filePath = $this->baseDir . '/app/Controllers/' . $controllerName . '.php';
 
-        if (file_exists($filePath)) {
+        if (file_exists($filePath) && !($options['force'] ?? false)) {
             echo "ℹ️  Controller {$controllerName} already exists. Skipping to preserve custom logic.\n";
         } else {
             file_put_contents($filePath, $template);
@@ -592,9 +572,9 @@ PHP;
     }
 
     /**
-     * Get Base Model template
+     * Get Model template
      */
-    private function getBaseModelTemplate(string $modelName, string $tableName, array $fillable, array $hidden, string $namespace, string|array $primaryKey = 'id'): string
+    private function getModelTemplate(string $modelName, string $tableName, array $fillable, array $hidden, string $namespace, string|array $primaryKey = 'id'): string
     {
         $fillableStr = "'" . implode("', '", $fillable) . "'";
         $hiddenStr = empty($hidden) ? '' : "'" . implode("', '", $hidden) . "'";
@@ -624,7 +604,7 @@ PHP;
         $relationsStr = "";
         $joins = [];
 
-        // Arrays to hold search fields and join calls for Core\Query
+        // Arrays to hold search fields and join calls for Wibiesana\Padi\Core\Query
         $searchFields = [];
         $joinCalls = [];
 
@@ -691,13 +671,34 @@ PHP;
         $searchFieldsStr = implode(",\n                ", $searchFields);
 
         // searchPaginate method
-        $searchPaginateMethod = <<<PHP
+        $pkStr = is_array($primaryKey) ? "['" . implode("', '", $primaryKey) . "']" : "'$primaryKey'";
+
+        return <<<PHP
+<?php
+
+namespace {$namespace};
+
+use Wibiesana\Padi\Core\ActiveRecord;
+use Wibiesana\Padi\Core\Query;
+
+class {$modelName} extends ActiveRecord
+{
+    protected string \$table = '{$tableName}';
+    protected string|array \$primaryKey = {$pkStr};
+    
+    protected array \$fillable = [
+        {$fillableStr}
+    ];
+    
+    protected array \$hidden = [{$hiddenStr}];
+{$auditConfig}
+{$relationsStr}
     /**
      * Search with pagination and joins
      */
     public function searchPaginate(string \$keyword, int \$page = 1, int \$perPage = 25, ?string \$orderBy = null): array
     {
-        \$query = \Core\Query::find()
+        \$query = Query::find()
             ->select("{\$this->table}.*")
             ->from(\$this->table)
             {$joinCallsStr}
@@ -730,37 +731,13 @@ PHP;
             ]
         ];
     }
-PHP;
-
-        $pkStr = is_array($primaryKey) ? "['" . implode("', '", $primaryKey) . "']" : "'$primaryKey'";
-
-        return <<<PHP
-<?php
-
-namespace {$namespace};
-
-use Core\ActiveRecord;
-
-class {$modelName} extends ActiveRecord
-{
-    protected string \$table = '{$tableName}';
-    protected string|array \$primaryKey = {$pkStr};
-    
-    protected array \$fillable = [
-        {$fillableStr}
-    ];
-    
-    protected array \$hidden = [{$hiddenStr}];
-{$auditConfig}
-{$relationsStr}
-{$searchPaginateMethod}
 
     /**
      * Search {$tableName} (simple limit)
      */
     public function search(string \$keyword, ?string \$orderBy = null): array
     {
-        \$query = \Core\Query::find()
+        \$query = Query::find()
             ->select("{\$this->table}.*")
             ->from(\$this->table)
             {$joinCallsStr}
@@ -785,7 +762,6 @@ class {$modelName} extends ActiveRecord
         return \$results;
     }
 }
-
 PHP;
     }
 
@@ -798,32 +774,9 @@ PHP;
     }
 
     /**
-     * Get Concrete Model template
+     * Get Controller template
      */
-    private function getModelTemplate(string $modelName, string $namespace, string $baseNamespace): string
-    {
-        return <<<PHP
-<?php
-
-namespace {$namespace};
-
-use {$baseNamespace}\\{$modelName} as BaseModel;
-
-class {$modelName} extends BaseModel
-{
-    /**
-     * Automatically eager load these relations on every query.
-     */
-    // protected array \$with = [];
-}
-
-PHP;
-    }
-
-    /**
-     * Get Base Controller template
-     */
-    private function getBaseControllerTemplate(string $modelName, string $controllerName, string $namespace, string $modelNamespace, array $validationRules): string
+    private function getControllerTemplate(string $modelName, string $controllerName, string $namespace, string $modelNamespace, array $validationRules): string
     {
         $modelVar = lcfirst($modelName);
         $tableName = $this->modelNameToTableName($modelName); // Infer table name
@@ -875,7 +828,8 @@ PHP;
 
 namespace {$namespace};
 
-use Core\Controller;
+use Wibiesana\Padi\Core\Controller;
+use Wibiesana\Padi\Core\Request;
 use {$modelNamespace}\\{$modelName};
 use App\Resources\\{$modelName}Resource;
 
@@ -883,7 +837,7 @@ class {$controllerName} extends Controller
 {
     protected {$modelName} \$model;
     
-    public function __construct(?\Core\Request \$request = null)
+    public function __construct(?Request \$request = null)
     {
         parent::__construct(\$request);
         \$this->model = new {$modelName}();
@@ -954,7 +908,7 @@ class {$controllerName} extends Controller
         \${$resourceName} = \$this->model->find(\$id);
         
         if (!\${$resourceName}) {
-            throw new \\Exception('{$modelName} not found', 404);
+            throw new \Exception('{$modelName} not found', 404);
         }
         
         return {$modelName}Resource::make(\${$resourceName});
@@ -976,7 +930,7 @@ class {$controllerName} extends Controller
             {$withRelationsStr}
             \${$resourceName} = \$this->model->find(\$id);
             return \$this->created({$modelName}Resource::make(\${$resourceName}));
-        } catch (\\PDOException \$e) {
+        } catch (\PDOException \$e) {
             \$this->databaseError('Failed to create {$resourceName}', \$e);
         }
     }
@@ -991,7 +945,7 @@ class {$controllerName} extends Controller
         \${$resourceName} = \$this->model->find(\$id);
         
         if (!\${$resourceName}) {
-            throw new \\Exception('{$modelName} not found', 404);
+            throw new \Exception('{$modelName} not found', 404);
         }
         
         \$validated = \$this->validate([
@@ -1003,7 +957,7 @@ class {$controllerName} extends Controller
              // Auto-generated eager loading
             {$withRelationsStr}
             return {$modelName}Resource::make(\$this->model->find(\$id));
-        } catch (\\PDOException \$e) {
+        } catch (\PDOException \$e) {
             \$this->databaseError('Failed to update {$resourceName}', \$e);
         }
     }
@@ -1018,39 +972,17 @@ class {$controllerName} extends Controller
         \${$resourceName} = \$this->model->find(\$id);
         
         if (!\${$resourceName}) {
-            throw new \\Exception('{$modelName} not found', 404);
+            throw new \Exception('{$modelName} not found', 404);
         }
         
         try {
             \$this->model->delete(\$id);
             return \$this->noContent();
-        } catch (\\PDOException \$e) {
+        } catch (\PDOException \$e) {
             \$this->databaseError('Failed to delete {$resourceName}', \$e);
         }
     }
 }
-PHP;
-    }
-
-    /**
-     * Get Concrete Controller template
-     */
-    private function getControllerTemplate(string $controllerName, string $namespace, string $baseNamespace): string
-    {
-        return <<<PHP
-<?php
-
-namespace {$namespace};
-
-use {$baseNamespace}\\{$controllerName} as BaseController;
-
-class {$controllerName} extends BaseController
-{
-    /**
-     * Override methods here to add custom logic.
-     */
-}
-
 PHP;
     }
 

@@ -1,6 +1,6 @@
 <?php
 
-namespace Core;
+namespace Wibiesana\Padi\Core;
 
 /**
  * Base Resource class for API response formatting

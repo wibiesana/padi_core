@@ -1,6 +1,6 @@
 <?php
 
-namespace Core;
+namespace Wibiesana\Padi\Core;
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;

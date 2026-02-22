@@ -1,6 +1,6 @@
 <?php
 
-namespace Core;
+namespace Wibiesana\Padi\Core;
 
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
