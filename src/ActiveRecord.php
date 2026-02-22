@@ -276,8 +276,8 @@ abstract class ActiveRecord
 
                         $result[$relation] = $relatedMap[$key] ?? [];
 
-                        // If belongsTo (single item), unwrap array
-                        if ($relationConfig['type'] === 'belongsTo') {
+                        // If belongsTo or hasOne (single item), unwrap array
+                        if ($relationConfig['type'] === 'belongsTo' || $relationConfig['type'] === 'hasOne') {
                             $result[$relation] = $result[$relation][0] ?? null;
                         }
                     }
@@ -299,6 +299,17 @@ abstract class ActiveRecord
     {
         return [
             'type' => 'hasMany',
+            'model' => $model,
+            'foreign_key' => $foreignKey,
+            'local_key' => $localKey,
+            'columns' => $columns
+        ];
+    }
+
+    protected function hasOne(string $model, string $foreignKey, string $localKey = 'id', array $columns = ['*']): array
+    {
+        return [
+            'type' => 'hasOne',
             'model' => $model,
             'foreign_key' => $foreignKey,
             'local_key' => $localKey,
