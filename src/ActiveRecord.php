@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace Wibiesana\Padi\Core;
 
 use PDO;
-use Core\Query;
-use Core\Auth;
 
 abstract class ActiveRecord
 {

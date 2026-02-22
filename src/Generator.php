@@ -198,7 +198,7 @@ class Generator
 
 namespace {$namespace};
 
-use Core\Resource;
+use Wibiesana\Padi\Core\Resource;
 
 class {$resourceName} extends Resource
 {
@@ -1082,7 +1082,7 @@ PHP;
         $sampleData = $this->generateSampleData($schema);
 
         // Get base URL from env or use default
-        $baseUrl = \Core\Env::get('APP_URL', 'http://localhost:8000');
+        $baseUrl = Env::get('APP_URL', 'http://localhost:8000');
         $apiPrefix = '';
 
         $collection = [
