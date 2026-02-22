@@ -16,7 +16,7 @@ class Logger
         if (self::$logger !== null) return;
 
         $root = defined('PADI_ROOT') ? PADI_ROOT : dirname(__DIR__, 4);
-        $configPath = $root . '/app/Config/app.php';
+        $configPath = $root . '/Config/app.php';
 
         if (!file_exists($configPath)) {
             // Fallback config if not found

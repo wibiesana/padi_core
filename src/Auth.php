@@ -15,7 +15,7 @@ class Auth
     {
         if (self::$secret === null) {
             $root = defined('PADI_ROOT') ? PADI_ROOT : dirname(__DIR__, 4);
-            $config = require $root . '/app/Config/auth.php';
+            $config = require $root . '/Config/auth.php';
             self::$secret = $config['jwt_secret'];
             self::$algorithm = $config['jwt_algorithm'] ?? 'HS256';
 

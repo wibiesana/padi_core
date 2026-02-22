@@ -227,7 +227,7 @@ class DatabaseManager
     private static function loadConfig(): void
     {
         $root = defined('PADI_ROOT') ? PADI_ROOT : dirname(__DIR__, 4);
-        $configPath = $root . '/app/Config/database.php';
+        $configPath = $root . '/Config/database.php';
 
         if (!file_exists($configPath)) {
             throw new PDOException("Database configuration file not found");
