@@ -70,15 +70,23 @@ class Generator
         // Detect Primary Key
         $primaryKey = $this->detectPrimaryKey($tableName);
 
-        // Generate Model (Only if not exists, or if force is set)
-        $template = $this->getModelTemplate($modelName, $tableName, $fillable, $hidden, $namespace, $primaryKey);
-        $filePath = $this->baseDir . '/app/Models/' . $modelName . '.php';
+        // 1. Generate Base Model (Always overwrite)
+        $baseModelTemplate = $this->getBaseModelTemplate($modelName, $tableName, $fillable, $hidden, $namespace . '\\Base', $primaryKey);
+        $baseDir = $this->baseDir . '/app/Models/Base';
+        if (!is_dir($baseDir)) mkdir($baseDir, 0755, true);
 
-        if (file_exists($filePath) && !($options['force'] ?? false)) {
-            echo "ℹ️  ActiveRecord {$modelName} already exists. Skipping to preserve custom logic.\n";
+        $baseFilePath = $baseDir . '/' . $modelName . '.php';
+        file_put_contents($baseFilePath, $baseModelTemplate);
+        echo "✓ Base Model {$modelName} created at {$baseFilePath}\n";
+
+        // 2. Generate Concrete Model (Only if not exists)
+        $concreteFilePath = $this->baseDir . '/app/Models/' . $modelName . '.php';
+        if (!file_exists($concreteFilePath) || ($options['force'] ?? false)) {
+            $concreteModelTemplate = $this->getConcreteModelTemplate($modelName, $namespace);
+            file_put_contents($concreteFilePath, $concreteModelTemplate);
+            echo "✓ Concrete Model {$modelName} created at {$concreteFilePath}\n";
         } else {
-            file_put_contents($filePath, $template);
-            echo "✓ ActiveRecord {$modelName} created successfully at {$filePath}\n";
+            echo "ℹ️  Concrete Model {$modelName} already exists. Skipping.\n";
         }
 
         return true;
@@ -106,15 +114,23 @@ class Generator
         $schema = $this->getTableSchema($tableName);
         $validationRules = $this->generateValidationRules($schema, $tableName);
 
-        // 2. Generate Controller (Only if not exists, or if force is set)
-        $template = $this->getControllerTemplate($modelName, $controllerName, $namespace, $modelNamespace, $validationRules);
-        $filePath = $this->baseDir . '/app/Controllers/' . $controllerName . '.php';
+        // 2. Generate Base Controller (Always overwrite)
+        $baseControllerTemplate = $this->getBaseControllerTemplate($modelName, $controllerName, $namespace . '\\Base', $modelNamespace, $validationRules);
+        $baseDir = $this->baseDir . '/app/Controllers/Base';
+        if (!is_dir($baseDir)) mkdir($baseDir, 0755, true);
 
-        if (file_exists($filePath) && !($options['force'] ?? false)) {
-            echo "ℹ️  Controller {$controllerName} already exists. Skipping to preserve custom logic.\n";
+        $baseFilePath = $baseDir . '/' . $controllerName . '.php';
+        file_put_contents($baseFilePath, $baseControllerTemplate);
+        echo "✓ Base Controller {$controllerName} created at {$baseFilePath}\n";
+
+        // 3. Generate Concrete Controller (Only if not exists)
+        $concreteFilePath = $this->baseDir . '/app/Controllers/' . $controllerName . '.php';
+        if (!file_exists($concreteFilePath) || ($options['force'] ?? false)) {
+            $concreteControllerTemplate = $this->getConcreteControllerTemplate($modelName, $controllerName, $namespace, $modelNamespace);
+            file_put_contents($concreteFilePath, $concreteControllerTemplate);
+            echo "✓ Concrete Controller {$controllerName} created at {$concreteFilePath}\n";
         } else {
-            file_put_contents($filePath, $template);
-            echo "✓ Controller {$controllerName} created successfully at {$filePath}\n";
+            echo "ℹ️  Concrete Controller {$controllerName} already exists. Skipping.\n";
         }
 
         return true;
@@ -572,9 +588,9 @@ PHP;
     }
 
     /**
-     * Get Model template
+     * Get Base Model template
      */
-    private function getModelTemplate(string $modelName, string $tableName, array $fillable, array $hidden, string $namespace, string|array $primaryKey = 'id'): string
+    private function getBaseModelTemplate(string $modelName, string $tableName, array $fillable, array $hidden, string $namespace, string|array $primaryKey = 'id'): string
     {
         $fillableStr = "'" . implode("', '", $fillable) . "'";
         $hiddenStr = empty($hidden) ? '' : "'" . implode("', '", $hidden) . "'";
@@ -766,6 +782,28 @@ PHP;
     }
 
     /**
+     * Get Concrete Model template
+     */
+    private function getConcreteModelTemplate(string $modelName, string $namespace): string
+    {
+        return <<<PHP
+<?php
+
+namespace {$namespace};
+
+use {$namespace}\Base\\{$modelName} as Base{$modelName};
+
+class {$modelName} extends Base{$modelName}
+{
+    /**
+     * Override methods here to add custom logic.
+     * Use beforeSave(), afterSave(), etc. for lifecycle hooks.
+     */
+}
+PHP;
+    }
+
+    /**
      * Helper to convert snake_case to camelCase
      */
     private function snakeToCamel($string)
@@ -774,9 +812,9 @@ PHP;
     }
 
     /**
-     * Get Controller template
+     * Get Base Controller template
      */
-    private function getControllerTemplate(string $modelName, string $controllerName, string $namespace, string $modelNamespace, array $validationRules): string
+    private function getBaseControllerTemplate(string $modelName, string $controllerName, string $namespace, string $modelNamespace, array $validationRules): string
     {
         $modelVar = lcfirst($modelName);
         $tableName = $this->modelNameToTableName($modelName); // Infer table name
@@ -982,6 +1020,27 @@ class {$controllerName} extends Controller
             \$this->databaseError('Failed to delete {$resourceName}', \$e);
         }
     }
+}
+PHP;
+    }
+
+    /**
+     * Get Concrete Controller template
+     */
+    private function getConcreteControllerTemplate(string $modelName, string $controllerName, string $namespace, string $modelNamespace): string
+    {
+        return <<<PHP
+<?php
+
+namespace {$namespace};
+
+use {$namespace}\Base\\{$controllerName} as Base{$controllerName};
+
+class {$controllerName} extends Base{$controllerName}
+{
+    /**
+     * Override methods here to add custom logic.
+     */
 }
 PHP;
     }
