@@ -588,6 +588,63 @@ PHP;
     }
 
     /**
+     * Get all tables in the database
+     */
+    private function getAllTables(): array
+    {
+        try {
+            $stmt = $this->db->query("SHOW TABLES");
+            return $stmt->fetchAll(\PDO::FETCH_COLUMN);
+        } catch (\Exception $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Check if a column in a table has a unique index
+     */
+    private function isColumnUnique(string $tableName, string $column): bool
+    {
+        try {
+            $stmt = $this->db->prepare("SHOW INDEX FROM {$tableName} WHERE Column_name = :column AND Non_unique = 0");
+            $stmt->execute(['column' => $column]);
+            return (bool)$stmt->fetch();
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Detect hasMany and hasOne relationships pointing to this table
+     */
+    private function getInverseRelations(string $tableName): array
+    {
+        $allTables = $this->getAllTables();
+        $relations = [];
+
+        foreach ($allTables as $otherTable) {
+            if ($otherTable === $tableName) continue;
+
+            $fks = $this->getTableForeignKeys($otherTable);
+            foreach ($fks as $fk) {
+                if ($fk['REFERENCED_TABLE_NAME'] === $tableName) {
+                    $isUnique = $this->isColumnUnique($otherTable, $fk['COLUMN_NAME']);
+                    $type = $isUnique ? 'hasOne' : 'hasMany';
+
+                    $relations[] = [
+                        'type' => $type,
+                        'table' => $otherTable,
+                        'column' => $fk['COLUMN_NAME'],
+                        'model' => $this->tableNameToModelName($otherTable)
+                    ];
+                }
+            }
+        }
+
+        return $relations;
+    }
+
+    /**
      * Get Base Model template
      */
     private function getBaseModelTemplate(string $modelName, string $tableName, array $fillable, array $hidden, string $namespace, string|array $primaryKey = 'id'): string
@@ -618,7 +675,6 @@ PHP;
 
         // Generate relationships and join logic
         $relationsStr = "";
-        $joins = [];
 
         // Arrays to hold search fields and join calls for Wibiesana\Padi\Core\Query
         $searchFields = [];
@@ -628,7 +684,7 @@ PHP;
         $foreignKeys = $this->getTableForeignKeys($tableName);
         $joinedTables = []; // Track used aliases
 
-        // 1. Analyze Foreign Keys for Relationships & Search Joins
+        // 1. Analyze Foreign Keys for Relationships (belongsTo) & Search Joins
         foreach ($foreignKeys as $fk) {
             $column = $fk['COLUMN_NAME'];
             $relatedTable = $fk['REFERENCED_TABLE_NAME'];
@@ -663,6 +719,25 @@ PHP;
 
             // Add related name to search fields using Alias
             $searchFields[] = "['LIKE', '{$alias}.{$displayCol}', \$keyword]";
+        }
+
+        // 2. Analyze Inverse Relationships (hasMany / hasOne)
+        $inverseRelations = $this->getInverseRelations($tableName);
+        foreach ($inverseRelations as $inv) {
+            $type = $inv['type'];
+            $relatedModel = $inv['model'];
+            $foreignKey = $inv['column'];
+
+            // Generate method name
+            $methodName = strtolower($relatedModel);
+            if ($type === 'hasMany') {
+                $methodName .= 's'; // simple pluralization
+            }
+
+            $relationsStr .= "\n    public function {$methodName}()\n";
+            $relationsStr .= "    {\n";
+            $relationsStr .= "        return \$this->{$type}(\\App\\Models\\{$relatedModel}::class, '{$foreignKey}');\n";
+            $relationsStr .= "    }\n";
         }
 
         // 2. Analyze Local Text Columns for Search
@@ -816,7 +891,6 @@ PHP;
      */
     private function getBaseControllerTemplate(string $modelName, string $controllerName, string $namespace, string $modelNamespace, array $validationRules): string
     {
-        $modelVar = lcfirst($modelName);
         $tableName = $this->modelNameToTableName($modelName); // Infer table name
         $resourceName = strtolower($modelName);
 
