@@ -13,7 +13,7 @@ class Email
     public static function send(string $to, string $subject, string $body, array $attachments = []): bool
     {
         $root = defined('PADI_ROOT') ? PADI_ROOT : dirname(__DIR__, 4);
-        $config = require $root . '/Config/mail.php';
+        $config = require $root . '/config/mail.php';
         $mail = new PHPMailer(true);
 
         try {

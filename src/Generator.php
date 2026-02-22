@@ -1308,8 +1308,8 @@ PHP;
             }
         }
 
-        // Create postman directory if not exists
-        $postmanDir = $this->baseDir . '/postman';
+        // Create api_collection directory if not exists
+        $postmanDir = $this->baseDir . '/api_collection';
         if (!is_dir($postmanDir)) {
             mkdir($postmanDir, 0755, true);
         }
@@ -1321,8 +1321,8 @@ PHP;
         $jsonContent = json_encode($collection, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         file_put_contents($filePath, $jsonContent);
 
-        echo "✓ Postman Collection created at {$filePath}\n";
-        echo "  Import this file to Postman to test the API endpoints\n";
+        echo "✓ API Collection created at {$filePath}\n";
+        echo "  Import this file to Postman or Insomnia to test the API endpoints\n";
 
         return true;
     }
