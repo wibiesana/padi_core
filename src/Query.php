@@ -628,6 +628,9 @@ class Query
         }
 
         $parts = [];
+        $keys = array_keys($conditions);
+        $count = count($keys);
+        $i = 0;
         foreach ($conditions as $key => $value) {
             if (is_int($key)) {
                 if (is_array($value)) {
@@ -640,10 +643,8 @@ class Query
                 $parts[] = $this->parseCondition([$key => $value]);
 
                 // Add AND if not the last element and next isn't an operator
-                $keys = array_keys($conditions);
-                $currentIndex = array_search($key, $keys);
-                if ($currentIndex < count($keys) - 1) {
-                    $nextKey = $keys[$currentIndex + 1];
+                if ($i < $count - 1) {
+                    $nextKey = $keys[$i + 1];
                     if (is_int($nextKey) && in_array(strtoupper((string)$conditions[$nextKey]), ['AND', 'OR'])) {
                         // Let the loop handle it
                     } else {
@@ -651,6 +652,7 @@ class Query
                     }
                 }
             }
+            $i++;
         }
 
         return implode(' ', array_filter($parts));

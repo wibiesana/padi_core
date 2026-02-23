@@ -295,6 +295,18 @@ PHP;
     }
 
     /**
+     * Generate CRUD for all tables in the database
+     */
+    public function generateCrudAll(array $options = []): void
+    {
+        $tables = $this->getAllTables();
+        foreach ($tables as $table) {
+            // Options are passed down, e.g. for write flag or forcing overwrite
+            $this->generateCrud($table, $options);
+        }
+    }
+
+    /**
      * Get table columns from database
      */
     private function getTableColumns(string $tableName): array

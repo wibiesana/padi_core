@@ -239,8 +239,7 @@ class Response
     {
         // Check if running in FrankenPHP worker mode
         if (function_exists('frankenphp_handle_request')) {
-            // In worker mode, just return to let the worker loop continue
-            return;
+            throw new TerminateException('Response terminated intentionally.');
         }
 
         // In traditional mode, exit normally

@@ -149,6 +149,10 @@ class Router
      */
     public function dispatch(Request $request): void
     {
+        // Reset state for worker loop consistency
+        Database::resetQueryCount();
+        DatabaseManager::clearErrors();
+
         $method = $request->method();
         $uri = rtrim($request->uri(), '/') ?: '/';
 
@@ -170,6 +174,9 @@ class Router
 
                     // Execute handler
                     $this->executeHandler($route['handler'], $request);
+                } catch (TerminateException $e) {
+                    // Response was intentionally terminated (e.g., json() called)
+                    return;
                 } catch (\Exception $e) {
                     // Handle middleware or controller exceptions
                     $this->handleException($e, $request);
