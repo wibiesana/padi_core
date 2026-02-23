@@ -775,6 +775,7 @@ PHP;
 
         // searchPaginate method
         $pkStr = is_array($primaryKey) ? "['" . implode("', '", $primaryKey) . "']" : "'$primaryKey'";
+        $pkForOrder = is_array($primaryKey) ? $primaryKey[0] : $primaryKey;
 
         return <<<PHP
 <?php
@@ -801,6 +802,7 @@ class {$modelName} extends ActiveRecord
      */
     public function searchPaginate(string \$keyword, int \$page = 1, int \$perPage = 25, ?string \$orderBy = null): array
     {
+        \$keyword = "%{\$keyword}%";
         \$query = Query::find()
             ->select("{\$this->table}.*")
             ->from(\$this->table)
@@ -812,7 +814,7 @@ class {$modelName} extends ActiveRecord
         if (\$orderBy) {
             \$query->orderBy(\$orderBy);
         } else {
-            \$query->orderBy("{\$this->table}.{\$this->primaryKey} DESC");
+            \$query->orderBy("{\$this->table}.{$pkForOrder} DESC");
         }
 
         \$result = \$query->paginate(\$perPage, \$page);
@@ -840,6 +842,7 @@ class {$modelName} extends ActiveRecord
      */
     public function search(string \$keyword, ?string \$orderBy = null): array
     {
+        \$keyword = "%{\$keyword}%";
         \$query = Query::find()
             ->select("{\$this->table}.*")
             ->from(\$this->table)
@@ -852,7 +855,7 @@ class {$modelName} extends ActiveRecord
         if (\$orderBy) {
             \$query->orderBy(\$orderBy);
         } else {
-            \$query->orderBy("{\$this->table}.{\$this->primaryKey} DESC");
+            \$query->orderBy("{\$this->table}.{$pkForOrder} DESC");
         }
 
         \$results = \$query->all();
