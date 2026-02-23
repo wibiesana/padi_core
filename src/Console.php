@@ -113,12 +113,32 @@ class Console
 
     private function getOption(string $name, string $default = ''): string
     {
+        return (string)($this->getOptions()[$name] ?? $default);
+    }
+
+    private function getOptions(): array
+    {
+        $options = [];
         foreach ($this->args as $arg) {
-            if (str_starts_with($arg, "--{$name}=")) {
-                return substr($arg, strlen("--{$name}="));
+            if (str_starts_with($arg, '--')) {
+                $parts = explode('=', substr($arg, 2), 2);
+                $key = $parts[0];
+                $value = $parts[1] ?? true;
+
+                if ($key === 'protected') {
+                    if ($value === 'all') {
+                        $options['protected'] = ['index', 'show', 'store', 'update', 'destroy'];
+                    } elseif ($value === 'none') {
+                        $options['protected'] = [];
+                    }
+                } elseif ($key === 'middleware') {
+                    $options['middleware'] = explode(',', (string)$value);
+                } else {
+                    $options[$key] = $value;
+                }
             }
         }
-        return $default;
+        return $options;
     }
 
     private function createController(): void
@@ -131,7 +151,7 @@ class Console
         }
 
         $generator = new Generator();
-        $generator->generateController($name);
+        $generator->generateController($name, $this->getOptions());
     }
 
     private function createModel(): void
@@ -144,7 +164,7 @@ class Console
         }
 
         $generator = new Generator();
-        $generator->generateModel($tableName);
+        $generator->generateModel($tableName, $this->getOptions());
     }
 
     private function createMigration(): void
@@ -192,13 +212,22 @@ PHP;
     private function migrate(): void
     {
         $migrator = new Migrator();
-        $migrator->migrate();
+        $options = $this->getOptions();
+
+        if (isset($options['tables']) && is_string($options['tables'])) {
+            $tables = explode(',', $options['tables']);
+            echo "Migrating specific tables: " . implode(', ', $tables) . "\n\n";
+            $migrator->migrate($tables);
+        } else {
+            $migrator->migrate();
+        }
     }
 
     private function migrateRollback(): void
     {
         $migrator = new Migrator();
-        $migrator->rollback();
+        $steps = (int)($this->getOptions()['step'] ?? 1);
+        $migrator->rollback($steps);
     }
 
     private function migrateStatus(): void
@@ -216,14 +245,18 @@ PHP;
         }
 
         $generator = new Generator();
-        $generator->generateCrud($tableName);
+        $generator->generateCrud($tableName, $this->getOptions());
     }
 
     private function generateCrudAll(): void
     {
         echo "\e[33mGenerating CRUD for all tables...\e[0m\n";
         $generator = new Generator();
-        $generator->generateCrudAll(['write' => true]); // Default to writing routes for bulk generation
+
+        $options = $this->getOptions();
+        $options['write'] = $options['write'] ?? true; // Default to writing routes for bulk generation
+
+        $generator->generateCrudAll($options);
         echo "\e[32m✓ Bulk CRUD generation completed!\e[0m\n";
     }
 
