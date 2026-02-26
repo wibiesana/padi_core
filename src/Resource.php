@@ -1,54 +1,56 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Wibiesana\Padi\Core;
 
 /**
  * Base Resource class for API response formatting
- * Similar to Laravel Resources or Yii Fields
+ * 
+ * Similar to Laravel Resources or Yii Fields.
+ * Transforms raw database arrays into clean API response shapes.
  */
 abstract class Resource implements \JsonSerializable
 {
-    /**
-     * The resource instance/array
-     * @var mixed
-     */
-    protected $resource;
+    /** @var mixed The resource instance/array */
+    protected mixed $resource;
 
-    public function __construct($resource)
+    public function __construct(mixed $resource)
     {
         $this->resource = $resource;
     }
 
     /**
      * Create a new resource instance
-     * @param mixed $resource
-     * @return static
      */
-    public static function make($resource)
+    public static function make(mixed $resource): static
     {
         return new static($resource);
     }
 
     /**
      * Create a collection of resources
-     * @param mixed $resource
-     * @return array
+     * 
+     * Handles both paginated results ['data' => [...], 'meta' => [...]]
+     * and flat arrays of items.
      */
-    public static function collection($resource)
+    public static function collection(mixed $resource): array
     {
-        // Handle paginated results ['data' => [...], 'meta' => [...]]
-        if (is_array($resource) && isset($resource['data']) && isset($resource['meta'])) {
-            $resource['data'] = array_map(function ($item) {
-                return (new static($item))->resolve();
-            }, $resource['data']);
+        // Handle paginated results
+        if (is_array($resource) && isset($resource['data'], $resource['meta'])) {
+            $resource['data'] = array_map(
+                static fn(mixed $item): array => (new static($item))->resolve(),
+                $resource['data']
+            );
             return $resource;
         }
 
-        // Handle array of items
+        // Handle flat array of items
         if (is_array($resource)) {
-            return array_map(function ($item) {
-                return (new static($item))->resolve();
-            }, $resource);
+            return array_map(
+                static fn(mixed $item): array => (new static($item))->resolve(),
+                $resource
+            );
         }
 
         return [];
@@ -56,7 +58,6 @@ abstract class Resource implements \JsonSerializable
 
     /**
      * Resolve the resource to an array
-     * @return array
      */
     public function resolve(): array
     {
@@ -68,10 +69,8 @@ abstract class Resource implements \JsonSerializable
 
     /**
      * Transform the resource into an array
-     * @param mixed $request
-     * @return array
      */
-    abstract public function toArray($request): array;
+    abstract public function toArray(mixed $request): array;
 
     /**
      * Serialize to JSON
@@ -83,13 +82,8 @@ abstract class Resource implements \JsonSerializable
 
     /**
      * Conditionally include a relation/field if it exists (is loaded)
-     * Useful to avoid errors when a relation wasn't eager loaded
-     * 
-     * @param string $key The key/relation name in the source array
-     * @param mixed $default Value to return if missing (null or hidden)
-     * @return mixed
      */
-    protected function whenLoaded(string $key, $default = null)
+    protected function whenLoaded(string $key, mixed $default = null): mixed
     {
         if (is_array($this->resource) && array_key_exists($key, $this->resource)) {
             return $this->resource[$key];
@@ -103,9 +97,9 @@ abstract class Resource implements \JsonSerializable
     }
 
     /**
-     * Access properties dynamically from the resource array
+     * Access properties dynamically from the resource
      */
-    public function __get($name)
+    public function __get(string $name): mixed
     {
         if (is_array($this->resource)) {
             return $this->resource[$name] ?? null;

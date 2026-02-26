@@ -9,18 +9,28 @@ use PDO;
 /**
  * Query Builder Class
  * 
- * Provides a fluent interface for building and executing SQL queries,
- * similar to yii\db\Query.
+ * Provides a fluent interface for building and executing SQL queries.
+ * 
+ * Security:
+ * - All values are bound via PDO prepared statements
+ * - LIMIT/OFFSET are bound as PDO::PARAM_INT (not interpolated)
+ * - PostgreSQL ILIKE auto-conversion supported
+ * 
+ * Performance:
+ * - Query state can be reset and reused
+ * - Minimal object allocation
  */
 class Query
 {
-    public const VERSION = '1.0.4';
+    public const VERSION = '2.0.0';
+
     protected ?PDO $db = null;
     protected ?string $connectionName = null;
     protected string|array $select = ['*'];
     protected ?string $from = null;
     protected array $where = [];
     protected array $params = [];
+    protected array $manualParams = [];
     protected array $join = [];
     protected array $orderBy = [];
     protected array $groupBy = [];
@@ -55,7 +65,7 @@ class Query
     }
 
     /**
-     * Add columns to select
+     * Add columns to existing select
      */
     public function addSelect(string|array $columns): self
     {
@@ -83,7 +93,7 @@ class Query
     }
 
     /**
-     * Set the table to select from
+     * Set the table to query from
      */
     public function from(string $table): self
     {
@@ -92,7 +102,7 @@ class Query
     }
 
     /**
-     * Add WHERE condition
+     * Set WHERE condition (replaces existing)
      */
     public function where(string|array $condition, array $params = []): self
     {
@@ -160,12 +170,11 @@ class Query
      */
     public function whereNotBetween(string $column, mixed $start, mixed $end): self
     {
-        // Not natively supported in parseCondition yet, but easy to add via string
         $p1 = ":nbet_" . count($this->params) . "_1";
         $p2 = ":nbet_" . count($this->params) . "_2";
         $this->params[$p1] = $start;
         $this->params[$p2] = $end;
-        return $this->andWhere("$column NOT BETWEEN $p1 AND $p2");
+        return $this->andWhere("{$column} NOT BETWEEN {$p1} AND {$p2}");
     }
 
     /**
@@ -173,7 +182,7 @@ class Query
      */
     public function whereNull(string $column): self
     {
-        return $this->andWhere("$column IS NULL");
+        return $this->andWhere("{$column} IS NULL");
     }
 
     /**
@@ -181,7 +190,7 @@ class Query
      */
     public function whereNotNull(string $column): self
     {
-        return $this->andWhere("$column IS NOT NULL");
+        return $this->andWhere("{$column} IS NOT NULL");
     }
 
     /**
@@ -189,7 +198,7 @@ class Query
      */
     public function addParams(array $params): self
     {
-        $this->params = array_merge($this->params, $params);
+        $this->manualParams = array_merge($this->manualParams, $params);
         return $this;
     }
 
@@ -202,7 +211,7 @@ class Query
     }
 
     /**
-     * Add JOIN
+     * Add JOIN clause
      */
     public function join(string $type, string $table, string $on = ''): self
     {
@@ -226,20 +235,16 @@ class Query
     }
 
     /**
-     * Add ORDER BY
+     * Set ORDER BY (replaces existing)
      */
     public function orderBy(string|array $columns): self
     {
-        if (is_string($columns)) {
-            $this->orderBy = [$columns];
-        } else {
-            $this->orderBy = $columns;
-        }
+        $this->orderBy = is_string($columns) ? [$columns] : $columns;
         return $this;
     }
 
     /**
-     * Add to the existing ORDER BY clause
+     * Add to existing ORDER BY clause
      */
     public function addOrderBy(string|array $columns): self
     {
@@ -247,29 +252,24 @@ class Query
             $columns = [$columns];
         }
 
-        if (empty($this->orderBy)) {
-            $this->orderBy = $columns;
-        } else {
-            $this->orderBy = array_merge($this->orderBy, $columns);
-        }
+        $this->orderBy = empty($this->orderBy)
+            ? $columns
+            : array_merge($this->orderBy, $columns);
+
         return $this;
     }
 
     /**
-     * Add GROUP BY
+     * Set GROUP BY
      */
     public function groupBy(string|array $columns): self
     {
-        if (is_string($columns)) {
-            $this->groupBy = [$columns];
-        } else {
-            $this->groupBy = $columns;
-        }
+        $this->groupBy = is_string($columns) ? [$columns] : $columns;
         return $this;
     }
 
     /**
-     * Add HAVING condition
+     * Set HAVING condition
      */
     public function having(string $condition, array $params = []): self
     {
@@ -298,14 +298,16 @@ class Query
 
     /**
      * Paginate results
-     * @return array [data, total, per_page, current_page, last_page]
+     * @return array{data: array, total: int, per_page: int, current_page: int, last_page: int}
      */
     public function paginate(int $perPage = 25, int $page = 1): array
     {
+        // Get total count first (before applying limit/offset)
+        $total = $this->count();
+
         $this->limit($perPage);
         $this->offset(($page - 1) * $perPage);
 
-        $total = $this->count();
         $data = $this->all();
 
         return [
@@ -313,7 +315,7 @@ class Query
             'total' => $total,
             'per_page' => $perPage,
             'current_page' => $page,
-            'last_page' => (int) ceil($total / $perPage)
+            'last_page' => $perPage > 0 ? (int)ceil($total / $perPage) : 1
         ];
     }
 
@@ -322,10 +324,10 @@ class Query
      */
     public function all(): array
     {
-        $sql = $this->buildSql();
+        [$sql, $params] = $this->buildAndPrepare();
         $stmt = $this->db->prepare($sql);
-        $stmt->execute($this->params);
-        Database::logQuery($sql, $this->params);
+        $this->bindAndExecute($stmt, $params);
+        Database::logQuery($sql, $params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
@@ -335,35 +337,35 @@ class Query
     public function one(): ?array
     {
         $this->limit(1);
-        $sql = $this->buildSql();
+        [$sql, $params] = $this->buildAndPrepare();
         $stmt = $this->db->prepare($sql);
-        $stmt->execute($this->params);
-        Database::logQuery($sql, $this->params);
+        $this->bindAndExecute($stmt, $params);
+        Database::logQuery($sql, $params);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         return $result ?: null;
     }
 
     /**
-     * Execute query and return a scalar value (e.g., from COUNT)
+     * Execute query and return a scalar value
      */
-    public function scalar()
+    public function scalar(): mixed
     {
-        $sql = $this->buildSql();
+        [$sql, $params] = $this->buildAndPrepare();
         $stmt = $this->db->prepare($sql);
-        $stmt->execute($this->params);
-        Database::logQuery($sql, $this->params);
+        $this->bindAndExecute($stmt, $params);
+        Database::logQuery($sql, $params);
         return $stmt->fetchColumn();
     }
 
     /**
-     * Execute query and return a column of results
+     * Execute query and return a single column
      */
     public function column(): array
     {
-        $sql = $this->buildSql();
+        [$sql, $params] = $this->buildAndPrepare();
         $stmt = $this->db->prepare($sql);
-        $stmt->execute($this->params);
-        Database::logQuery($sql, $this->params);
+        $this->bindAndExecute($stmt, $params);
+        Database::logQuery($sql, $params);
         return $stmt->fetchAll(PDO::FETCH_COLUMN);
     }
 
@@ -373,9 +375,23 @@ class Query
     public function count(string $q = '*'): int
     {
         $oldSelect = $this->select;
-        $this->select = ["COUNT($q)"];
+        $oldOrderBy = $this->orderBy;
+        $oldLimit = $this->limit;
+        $oldOffset = $this->offset;
+
+        $this->select = ["COUNT({$q})"];
+        $this->orderBy = [];
+        $this->limit = null;
+        $this->offset = null;
+
         $count = (int)$this->scalar();
+
+        // Restore original state
         $this->select = $oldSelect;
+        $this->orderBy = $oldOrderBy;
+        $this->limit = $oldLimit;
+        $this->offset = $oldOffset;
+
         return $count;
     }
 
@@ -393,7 +409,7 @@ class Query
     public function sum(string $q): mixed
     {
         $oldSelect = $this->select;
-        $this->select = ["SUM($q)"];
+        $this->select = ["SUM({$q})"];
         $result = $this->scalar();
         $this->select = $oldSelect;
         return $result;
@@ -405,46 +421,44 @@ class Query
     public function average(string $q): mixed
     {
         $oldSelect = $this->select;
-        $this->select = ["AVG($q)"];
+        $this->select = ["AVG({$q})"];
         $result = $this->scalar();
         $this->select = $oldSelect;
         return $result;
     }
 
-    /**
-     * Alias for average()
-     */
+    /** Alias for average() */
     public function avg(string $q): mixed
     {
         return $this->average($q);
     }
 
     /**
-     * Find the minimum value of the specified column
+     * Find the minimum value
      */
     public function min(string $q): mixed
     {
         $oldSelect = $this->select;
-        $this->select = ["MIN($q)"];
+        $this->select = ["MIN({$q})"];
         $result = $this->scalar();
         $this->select = $oldSelect;
         return $result;
     }
 
     /**
-     * Find the maximum value of the specified column
+     * Find the maximum value
      */
     public function max(string $q): mixed
     {
         $oldSelect = $this->select;
-        $this->select = ["MAX($q)"];
+        $this->select = ["MAX({$q})"];
         $result = $this->scalar();
         $this->select = $oldSelect;
         return $result;
     }
 
     /**
-     * Execute DELETE query based on conditions
+     * Execute DELETE query
      * @return int Number of affected rows
      */
     public function delete(): int
@@ -453,21 +467,23 @@ class Query
             throw new \Exception("Table name (from) must be specified for delete operation.");
         }
 
+        // Reset params to manual params
+        $this->params = $this->manualParams;
+
         $sql = 'DELETE FROM ' . $this->from;
         if (!empty($this->where)) {
             $sql .= ' WHERE ' . $this->buildWhere($this->where);
         }
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute($this->params);
+        $this->bindAndExecute($stmt, $this->params);
         Database::logQuery($sql, $this->params);
 
         return $stmt->rowCount();
     }
 
     /**
-     * Execute UPDATE query based on conditions
-     * @param array $data Attribute values (name => value) to be saved
+     * Execute UPDATE query
      * @return int Number of affected rows
      */
     public function update(array $data): int
@@ -480,10 +496,13 @@ class Query
             return 0;
         }
 
+        // Reset params to manual params
+        $this->params = $this->manualParams;
+
         $set = [];
         foreach ($data as $column => $value) {
             $paramName = ":upd_" . str_replace('.', '_', (string)$column);
-            $set[] = "$column = $paramName";
+            $set[] = "{$column} = {$paramName}";
             $this->params[$paramName] = $value;
         }
 
@@ -493,7 +512,7 @@ class Query
         }
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute($this->params);
+        $this->bindAndExecute($stmt, $this->params);
         Database::logQuery($sql, $this->params);
 
         return $stmt->rowCount();
@@ -501,10 +520,9 @@ class Query
 
     /**
      * Execute INSERT query
-     * @param array $data Attribute values (name => value) to be inserted
      * @return string|int Last inserted ID
      */
-    public function insert(array $data)
+    public function insert(array $data): string|int|false
     {
         if (empty($this->from)) {
             throw new \Exception("Table name (from) must be specified for insert operation.");
@@ -513,6 +531,9 @@ class Query
         if (empty($data)) {
             return false;
         }
+
+        // Reset params
+        $this->params = $this->manualParams;
 
         $columns = [];
         $placeholders = [];
@@ -526,10 +547,55 @@ class Query
         $sql = 'INSERT INTO ' . $this->from . ' (' . implode(', ', $columns) . ') VALUES (' . implode(', ', $placeholders) . ')';
 
         $stmt = $this->db->prepare($sql);
-        $stmt->execute($this->params);
+        $this->bindAndExecute($stmt, $this->params);
         Database::logQuery($sql, $this->params);
 
         return $this->db->lastInsertId();
+    }
+
+    /**
+     * Build SQL and prepare parameters (including LIMIT/OFFSET as bound params)
+     * 
+     * @return array{0: string, 1: array} [sql, params]
+     */
+    private function buildAndPrepare(): array
+    {
+        $sql = $this->buildSql();
+        $params = $this->params;
+
+        // Bind LIMIT and OFFSET as named parameters for security
+        if ($this->limit !== null) {
+            $params[':_limit'] = $this->limit;
+        }
+        if ($this->offset !== null) {
+            $params[':_offset'] = $this->offset;
+        }
+
+        return [$sql, $params];
+    }
+
+    /**
+     * Bind parameters and execute statement
+     * 
+     * Uses proper PDO types for LIMIT/OFFSET (PARAM_INT)
+     */
+    private function bindAndExecute(\PDOStatement $stmt, array $params): void
+    {
+        foreach ($params as $key => $value) {
+            if ($key === ':_limit' || $key === ':_offset') {
+                $stmt->bindValue($key, (int)$value, PDO::PARAM_INT);
+            } elseif (is_int($value)) {
+                $stmt->bindValue($key, $value, PDO::PARAM_INT);
+            } elseif (is_bool($value)) {
+                $stmt->bindValue($key, $value, PDO::PARAM_BOOL);
+            } elseif ($value === null) {
+                $stmt->bindValue($key, null, PDO::PARAM_NULL);
+            } else {
+                $stmt->bindValue($key, $value, PDO::PARAM_STR);
+            }
+        }
+
+        $stmt->execute();
     }
 
     /**
@@ -537,89 +603,97 @@ class Query
      */
     public function buildSql(): string
     {
+        // Reset dynamic params to manual params to prevent duplication
+        $this->params = $this->manualParams;
+
         $sql = 'SELECT ';
         if ($this->distinct) {
             $sql .= 'DISTINCT ';
         }
 
-        if (is_array($this->select)) {
-            $sql .= implode(', ', $this->select);
-        } else {
-            $sql .= $this->select;
-        }
-
+        $sql .= is_array($this->select) ? implode(', ', $this->select) : $this->select;
         $sql .= ' FROM ' . $this->from;
 
-        if (!empty($this->join)) {
-            foreach ($this->join as $join) {
-                [$type, $table, $on] = $join;
-                $sql .= " $type $table";
-                if ($on) {
-                    $sql .= " ON $on";
-                }
+        // JOINs
+        foreach ($this->join as [$type, $table, $on]) {
+            $sql .= " {$type} {$table}";
+            if ($on !== '') {
+                $sql .= " ON {$on}";
             }
         }
 
+        // WHERE
         if (!empty($this->where)) {
             $sql .= ' WHERE ' . $this->buildWhere($this->where);
         }
 
+        // GROUP BY
         if (!empty($this->groupBy)) {
             $sql .= ' GROUP BY ' . implode(', ', $this->groupBy);
         }
 
-        if ($this->having) {
+        // HAVING
+        if ($this->having !== null) {
             $sql .= ' HAVING ' . $this->having;
         }
 
+        // ORDER BY
         if (!empty($this->orderBy)) {
             $orders = [];
             foreach ($this->orderBy as $column => $direction) {
                 if (is_int($column)) {
                     $orders[] = $direction;
                 } else {
-                    // Normalize direction (handle SORT_ASC/SORT_DESC constants)
                     if (is_int($direction)) {
-                        $direction = $direction === 3 ? 'DESC' : 'ASC'; // 3 = SORT_DESC, 4 = SORT_ASC
+                        $direction = $direction === SORT_DESC ? 'DESC' : 'ASC';
                     }
-                    $orders[] = "$column $direction";
+                    $orders[] = "{$column} {$direction}";
                 }
             }
             $sql .= ' ORDER BY ' . implode(', ', $orders);
         }
 
+        // LIMIT / OFFSET as parameterized placeholders
         if ($this->limit !== null) {
-            $sql .= ' LIMIT ' . $this->limit;
+            $sql .= ' LIMIT :_limit';
         }
 
         if ($this->offset !== null) {
-            $sql .= ' OFFSET ' . $this->offset;
+            $sql .= ' OFFSET :_offset';
         }
 
         return $sql;
     }
 
     /**
-     * Get the raw SQL with parameters interpolated (for debugging)
+     * Get raw SQL with parameters interpolated (debugging only)
      */
     public function rawSql(): string
     {
         $sql = $this->buildSql();
-        foreach ($this->params as $key => $value) {
-            if (is_string($value)) {
-                $value = "'" . addslashes($value) . "'";
-            } elseif ($value === null) {
-                $value = 'NULL';
+        $params = array_merge($this->params, [
+            ':_limit' => $this->limit,
+            ':_offset' => $this->offset,
+        ]);
+
+        foreach ($params as $key => $value) {
+            if ($value === null) {
+                $replacement = 'NULL';
             } elseif (is_bool($value)) {
-                $value = $value ? '1' : '0';
+                $replacement = $value ? '1' : '0';
+            } elseif (is_int($value) || is_float($value)) {
+                $replacement = (string)$value;
+            } else {
+                $replacement = "'" . addslashes((string)$value) . "'";
             }
-            $sql = str_replace($key, (string)$value, $sql);
+            $sql = str_replace($key, $replacement, $sql);
         }
+
         return $sql;
     }
 
     /**
-     * Build WHERE clause
+     * Build WHERE clause from condition array
      */
     protected function buildWhere(array $conditions): string
     {
@@ -631,6 +705,7 @@ class Query
         $keys = array_keys($conditions);
         $count = count($keys);
         $i = 0;
+
         foreach ($conditions as $key => $value) {
             if (is_int($key)) {
                 if (is_array($value)) {
@@ -639,15 +714,11 @@ class Query
                     $parts[] = $value;
                 }
             } else {
-                // Handle directly passed associative arrays
                 $parts[] = $this->parseCondition([$key => $value]);
 
-                // Add AND if not the last element and next isn't an operator
                 if ($i < $count - 1) {
                     $nextKey = $keys[$i + 1];
-                    if (is_int($nextKey) && in_array(strtoupper((string)$conditions[$nextKey]), ['AND', 'OR'])) {
-                        // Let the loop handle it
-                    } else {
+                    if (!(is_int($nextKey) && in_array(strtoupper((string)$conditions[$nextKey]), ['AND', 'OR']))) {
                         $parts[] = 'AND';
                     }
                 }
@@ -659,32 +730,31 @@ class Query
     }
 
     /**
-     * Parse a single condition array
+     * Parse a single condition into SQL
      */
     protected function parseCondition(array $condition): string
     {
         if (empty($condition)) return '';
 
-        // Check if it's an associative array (hash format: ['col' => 'val'])
+        // Hash format: ['col' => 'val', 'col2' => [1,2,3]]
         if (!isset($condition[0])) {
             $parts = [];
             foreach ($condition as $column => $value) {
                 if (is_array($value)) {
-                    // Automatic IN support: ['id' => [1,2,3]]
+                    // Automatic IN: ['id' => [1,2,3]]
                     $placeholders = [];
                     foreach ($value as $i => $v) {
-                        $paramName = ":in_" . count($this->params) . "_" . $i;
+                        $paramName = ":in_" . count($this->params) . "_{$i}";
                         $placeholders[] = $paramName;
                         $this->params[$paramName] = $v;
                     }
-                    $parts[] = "$column IN (" . implode(', ', $placeholders) . ")";
+                    $parts[] = "{$column} IN (" . implode(', ', $placeholders) . ")";
                 } elseif ($value === null) {
-                    // Automatic NULL support: ['deleted_at' => null]
-                    $parts[] = "$column IS NULL";
+                    $parts[] = "{$column} IS NULL";
                 } else {
                     $paramName = ":p_" . count($this->params) . "_" . str_replace('.', '_', (string)$column);
                     $this->params[$paramName] = $value;
-                    $parts[] = "$column = $paramName";
+                    $parts[] = "{$column} = {$paramName}";
                 }
             }
             return implode(' AND ', $parts);
@@ -692,27 +762,27 @@ class Query
 
         $operator = strtoupper((string)($condition[0] ?? ''));
 
-        // Handle [operator, column, value] format: ['like', 'title', 'query']
-        if (in_array($operator, ['LIKE', 'NOT LIKE'])) {
+        // LIKE / NOT LIKE
+        if ($operator === 'LIKE' || $operator === 'NOT LIKE') {
             $column = $condition[1];
             $value = $condition[2];
             $paramName = ":p_" . count($this->params) . "_" . str_replace('.', '_', (string)$column);
 
             // Auto-wrap with % if not already present
-            if (strpos($value, '%') === false) {
-                $value = "%$value%";
+            if (!str_contains($value, '%')) {
+                $value = "%{$value}%";
             }
 
             $currentOperator = $operator;
-            // Handle PostgreSQL ILIKE
             if ($this->autoIlike && DatabaseManager::getDriver($this->connectionName) === 'pgsql') {
                 $currentOperator = ($operator === 'LIKE') ? 'ILIKE' : 'NOT ILIKE';
             }
 
             $this->params[$paramName] = $value;
-            return "$column $currentOperator $paramName";
+            return "{$column} {$currentOperator} {$paramName}";
         }
 
+        // AND / OR grouping
         if ($operator === 'AND' || $operator === 'OR') {
             array_shift($condition);
             $parts = [];
@@ -723,9 +793,10 @@ class Query
                     $parts[] = $subCondition;
                 }
             }
-            return implode(" $operator ", $parts);
+            return implode(" {$operator} ", $parts);
         }
 
+        // Three-element format: [column, operator, value]
         if (count($condition) === 3) {
             $column = $condition[0];
             $op = strtoupper($condition[1]);
@@ -735,13 +806,13 @@ class Query
                 if (is_array($value)) {
                     $placeholders = [];
                     foreach ($value as $i => $v) {
-                        $paramName = ":in_" . count($this->params) . "_" . $i;
+                        $paramName = ":in_" . count($this->params) . "_{$i}";
                         $placeholders[] = $paramName;
                         $this->params[$paramName] = $v;
                     }
-                    return "$column $op (" . implode(', ', $placeholders) . ")";
+                    return "{$column} {$op} (" . implode(', ', $placeholders) . ")";
                 }
-                return "$column $op ($value)";
+                return "{$column} {$op} ({$value})";
             }
 
             if ($op === 'BETWEEN' && is_array($value) && count($value) === 2) {
@@ -749,19 +820,19 @@ class Query
                 $p2 = ":bet_" . count($this->params) . "_2";
                 $this->params[$p1] = $value[0];
                 $this->params[$p2] = $value[1];
-                return "$column BETWEEN $p1 AND $p2";
+                return "{$column} BETWEEN {$p1} AND {$p2}";
             }
 
             $paramName = ":p_" . count($this->params) . "_" . str_replace('.', '_', $column);
             $this->params[$paramName] = $value;
-            return "$column $op $paramName";
+            return "{$column} {$op} {$paramName}";
         }
 
         return '';
     }
 
     /**
-     * Simple static helper to start a query
+     * Static helper to start a new query
      */
     public static function find(?string $connection = null): self
     {

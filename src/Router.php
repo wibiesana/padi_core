@@ -4,10 +4,27 @@ declare(strict_types=1);
 
 namespace Wibiesana\Padi\Core;
 
+/**
+ * Router - HTTP Request Routing Engine
+ * 
+ * Performance:
+ * - Routes are pre-compiled with regex during registration (not at dispatch time)
+ * - Method-first filtering skips irrelevant routes immediately
+ * - Worker-mode: route table is built once and reused across all requests
+ * 
+ * Security:
+ * - Controller/method names validated against class_exists/method_exists
+ * - Exception traces only exposed in debug mode
+ */
 class Router
 {
+    /** @var array<int, array> Registered routes */
     private array $routes = [];
+
+    /** @var string Current group prefix */
     private string $prefix = '';
+
+    /** @var array Current group middlewares */
     private array $groupMiddlewares = [];
 
     /**
@@ -59,18 +76,17 @@ class Router
     }
 
     /**
-     * Add route for any method
+     * Add route for any HTTP method
      */
     public function any(string $path, $handler): void
     {
-        $methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
-        foreach ($methods as $method) {
+        foreach (['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as $method) {
             $this->addRoute($method, $path, $handler);
         }
     }
 
     /**
-     * Create versioned route group
+     * Create versioned route group (e.g., /v1, /v2)
      */
     public function version(string $v, callable $callback): void
     {
@@ -78,7 +94,7 @@ class Router
     }
 
     /**
-     * Create route group with prefix
+     * Create route group with prefix and/or middleware
      */
     public function group(array $attributes, callable $callback): void
     {
@@ -103,7 +119,7 @@ class Router
     }
 
     /**
-     * Add middleware to route
+     * Add middleware to last registered route
      */
     public function middleware($middleware): self
     {
@@ -121,14 +137,16 @@ class Router
     }
 
     /**
-     * Add route
+     * Register a route
+     * 
+     * Regex is pre-compiled here so worker mode doesn't recompile per-request.
      */
     private function addRoute(string $method, string $path, $handler): self
     {
         $path = '/' . trim($this->prefix . '/' . trim($path, '/'), '/');
         $path = $path === '/' ? '/' : rtrim($path, '/');
 
-        // Pre-compile regex for performance
+        // Pre-compile regex for performance (compiled once, matched many times)
         $regex = preg_replace('/\{([a-zA-Z0-9_]+)\*\}/', '(?P<$1>.*)', $path);
         $regex = preg_replace('/\{([a-zA-Z0-9_]+)\}/', '(?P<$1>[^/]+)', $regex);
         $regex = '#^' . $regex . '$#';
@@ -145,29 +163,30 @@ class Router
     }
 
     /**
-     * Dispatch request
+     * Dispatch incoming request to matching route
      */
     public function dispatch(Request $request): void
     {
-        // Reset state for worker loop consistency
+        // Reset per-request state for worker loop consistency
         Database::resetQueryCount();
         DatabaseManager::clearErrors();
 
         $method = $request->method();
         $uri = rtrim($request->uri(), '/') ?: '/';
 
-
         foreach ($this->routes as $route) {
+            // Fast path: skip routes with a different HTTP method
             if ($route['method'] !== $method) {
                 continue;
             }
 
             if (preg_match($route['regex'], $uri, $matches)) {
+                // Extract named parameters only
                 $params = array_filter($matches, 'is_string', ARRAY_FILTER_USE_KEY);
                 $request->setParams($params);
 
                 try {
-                    // Execute middlewares
+                    // Execute middleware pipeline
                     foreach ($route['middlewares'] as $middleware) {
                         $this->executeMiddleware($middleware, $request);
                     }
@@ -178,14 +197,13 @@ class Router
                     // Response was intentionally terminated (e.g., json() called)
                     return;
                 } catch (\Exception $e) {
-                    // Handle middleware or controller exceptions
                     $this->handleException($e, $request);
                 }
                 return;
             }
         }
 
-        // Route not found
+        // No matching route found
         $response = new Response();
         $response->json([
             'success' => false,
@@ -195,7 +213,7 @@ class Router
     }
 
     /**
-     * Execute middleware
+     * Execute a middleware (class-based or callable)
      */
     private function executeMiddleware($middleware, Request $request): void
     {
@@ -203,22 +221,22 @@ class Router
             // Support parameters like 'RoleMiddleware:admin,manager'
             $parts = explode(':', $middleware, 2);
             $name = $parts[0];
-            $params = isset($parts[1]) ? $parts[1] : '';
+            $params = $parts[1] ?? '';
 
             $middlewareClass = "App\\Middleware\\{$name}";
-            if (class_exists($middlewareClass)) {
-                $instance = new $middlewareClass();
-                $instance->handle($request, $params);
-            } else {
-                throw new \Exception("Middleware {$middlewareClass} not found");
+            if (!class_exists($middlewareClass)) {
+                throw new \Exception("Middleware {$middlewareClass} not found", 500);
             }
+
+            $instance = new $middlewareClass();
+            $instance->handle($request, $params);
         } elseif (is_callable($middleware)) {
             $middleware($request);
         }
     }
 
     /**
-     * Execute route handler
+     * Execute route handler (closure or Controller@method string)
      */
     private function executeHandler($handler, Request $request): void
     {
@@ -230,16 +248,17 @@ class Router
             [$controller, $method] = explode('@', $handler);
             $controllerClass = "App\\Controllers\\{$controller}";
 
-            if (class_exists($controllerClass)) {
-                $instance = new $controllerClass($request);
-                if (method_exists($instance, $method)) {
-                    $result = $instance->$method();
-                } else {
-                    throw new \Exception("Method {$method} not found in {$controllerClass}");
-                }
-            } else {
-                throw new \Exception("Controller {$controllerClass} not found");
+            if (!class_exists($controllerClass)) {
+                throw new \Exception("Controller {$controllerClass} not found", 404);
             }
+
+            $instance = new $controllerClass($request);
+
+            if (!method_exists($instance, $method)) {
+                throw new \Exception("Method {$method} not found in {$controllerClass}", 404);
+            }
+
+            $result = $instance->$method();
         }
 
         // Auto-format response if result is returned or status code is set
@@ -249,15 +268,14 @@ class Router
     }
 
     /**
-     * Handle exceptions from controllers
+     * Handle controller/middleware exceptions
      */
     private function handleException(\Exception $e, Request $request): void
     {
         $response = new Response();
         $statusCode = $e->getCode();
 
-        // Ensure status code is valid HTTP status code (integer between 100 and 599)
-        // PDOExceptions often return string error codes (SQLSTATE) which should be treated as 500
+        // Ensure valid HTTP status code (PDOExceptions return SQLSTATE strings)
         if (!is_int($statusCode) || $statusCode < 100 || $statusCode > 599) {
             $statusCode = 500;
         }
@@ -265,16 +283,16 @@ class Router
         $error = [
             'success' => false,
             'message' => $e->getMessage() ?: 'An error occurred',
-            'message_code' => $this->getStatusCodeName($statusCode)
+            'message_code' => self::getStatusCodeName($statusCode)
         ];
 
-        // Include validation errors if it's a ValidationException
+        // Include validation errors
         if ($e instanceof ValidationException) {
             $error['errors'] = $e->getErrors();
         }
 
-        // Add debug info if in debug mode
-        if (Env::get('APP_DEBUG', false)) {
+        // Debug info only in debug mode
+        if (Env::get('APP_DEBUG', 'false') === 'true') {
             $error['debug'] = [
                 'file' => $e->getFile(),
                 'line' => $e->getLine(),
@@ -286,50 +304,41 @@ class Router
     }
 
     /**
-     * Auto-format response based on return type
+     * Auto-format response based on return type and headers
      */
     private function formatResponse($data, Request $request): void
     {
         $response = new Response();
-
-        // Get custom status code if set
         $statusCode = $request->getResponseStatusCode() ?? 200;
-
-        // Handle different response formats based on environment variable or request header
         $format = $this->getResponseFormat($request);
 
-        switch ($format) {
-            case 'raw':
-                // Return data as-is without wrapping
-                $response->json($data, $statusCode);
-                break;
-
-            case 'simple':
-                // Simple success wrapper
-                if (is_array($data) && isset($data['status'])) {
-                    // Data already has status structure
-                    $response->json($data, $statusCode);
-                } else {
-                    $response->json([
+        match ($format) {
+            'raw' => $response->json($data, $statusCode),
+            'simple' => $response->json(
+                (is_array($data) && isset($data['status']))
+                    ? $data
+                    : [
                         'status' => 'success',
-                        'code' => $this->getStatusCodeName($statusCode),
+                        'code' => self::getStatusCodeName($statusCode),
                         'item' => $data
-                    ], $statusCode);
-                }
-                break;
+                    ],
+                $statusCode
+            ),
+            default => $this->formatFullResponse($data, $response, $statusCode),
+        };
+    }
 
-            case 'full':
-            default:
-                // Full framework response format
-                if (is_array($data) && isset($data['success'])) {
-                    // Data already has framework format
-                    $response->json($data, $statusCode);
-                } else {
-                    // Auto-detect if it's a collection or single item
-                    $this->autoFormatResponse($data, $response, $statusCode);
-                }
-                break;
+    /**
+     * Full framework response format (with auto-detect collection/single)
+     */
+    private function formatFullResponse($data, Response $response, int $statusCode): void
+    {
+        if (is_array($data) && isset($data['success'])) {
+            $response->json($data, $statusCode);
+            return;
         }
+
+        $this->autoFormatResponse($data, $response, $statusCode);
     }
 
     /**
@@ -345,7 +354,6 @@ class Router
         };
 
         if (is_array($data) && $this->isCollection($data)) {
-            // Collection response
             $response->json([
                 'success' => true,
                 'message' => 'Success',
@@ -353,7 +361,6 @@ class Router
                 'item' => $data
             ], $statusCode);
         } else {
-            // Single item response
             $responseData = [
                 'success' => true,
                 'message' => 'Success',
@@ -369,48 +376,34 @@ class Router
     }
 
     /**
-     * Check if data is a collection
+     * Check if data is a collection (sequential array or paginated result)
      */
     private function isCollection($data): bool
     {
-        if (!is_array($data)) {
-            return false;
-        }
+        if (!is_array($data)) return false;
+        if (empty($data)) return true;
+        if (isset($data['meta'], $data['data'])) return true;
 
-        // Empty array is considered a collection
-        if (empty($data)) {
-            return true;
-        }
-
-        // If it has pagination meta, it's likely a collection
-        if (isset($data['meta']) && isset($data['data'])) {
-            return true;
-        }
-
-        // If it's a sequential array or has multiple items with similar structure
-        return array_keys($data) === range(0, count($data) - 1);
+        return array_is_list($data);
     }
 
     /**
-     * Get response format preference
+     * Get response format preference from header or env
      */
     private function getResponseFormat(Request $request): string
     {
-        // Check request header first
         $formatHeader = $request->header('X-Response-Format');
-        if ($formatHeader) {
+        if ($formatHeader !== null) {
             return strtolower($formatHeader);
         }
 
-        // Check environment variable
-        $envFormat = Env::get('RESPONSE_FORMAT', 'full');
-        return strtolower($envFormat);
+        return strtolower(Env::get('RESPONSE_FORMAT', 'full'));
     }
 
     /**
      * Get status code name
      */
-    private function getStatusCodeName(int $code): string
+    public static function getStatusCodeName(int $code): string
     {
         return match ($code) {
             200 => 'SUCCESS',
@@ -420,8 +413,13 @@ class Router
             401 => 'UNAUTHORIZED',
             403 => 'FORBIDDEN',
             404 => 'NOT_FOUND',
+            405 => 'METHOD_NOT_ALLOWED',
+            409 => 'CONFLICT',
             422 => 'VALIDATION_FAILED',
+            429 => 'TOO_MANY_REQUESTS',
             500 => 'INTERNAL_SERVER_ERROR',
+            502 => 'BAD_GATEWAY',
+            503 => 'SERVICE_UNAVAILABLE',
             default => 'SUCCESS'
         };
     }

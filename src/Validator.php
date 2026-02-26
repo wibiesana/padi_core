@@ -4,6 +4,16 @@ declare(strict_types=1);
 
 namespace Wibiesana\Padi\Core;
 
+/**
+ * Validator - Input Validation Engine
+ * 
+ * Supports rules: required, email, min, max, numeric, integer, alpha,
+ * alphanumeric, url, in, unique, confirmed, date, boolean, array, regex
+ * 
+ * Security:
+ * - Table/column names validated against injection
+ * - No dynamic SQL without parameterization
+ */
 class Validator
 {
     private array $data;
@@ -20,7 +30,7 @@ class Validator
     }
 
     /**
-     * Validate data
+     * Validate all fields against their rules
      */
     public function validate(): bool
     {
@@ -31,8 +41,8 @@ class Validator
                 $this->validateField($field, $rule);
             }
 
-            // Add to validated data if no errors
-            if (!isset($this->errors[$field]) && isset($this->data[$field])) {
+            // Add to validated data if no errors for this field
+            if (!isset($this->errors[$field]) && array_key_exists($field, $this->data)) {
                 $this->validated[$field] = $this->data[$field];
             }
         }
@@ -41,119 +51,204 @@ class Validator
     }
 
     /**
-     * Validate single field
+     * Validate a single field against a single rule
      */
     private function validateField(string $field, string $rule): void
     {
         [$ruleName, $ruleValue] = $this->parseRule($rule);
         $value = $this->data[$field] ?? null;
 
-        switch ($ruleName) {
-            case 'required':
-                if (empty($value) && $value !== '0') {
-                    $this->addError($field, $ruleName, 'The {field} field is required');
-                } elseif (is_string($value) && trim($value) === '') {
-                    $this->addError($field, $ruleName, 'The {field} field is required');
-                }
-                break;
+        match ($ruleName) {
+            'required' => $this->validateRequired($field, $value),
+            'email' => $this->validateEmail($field, $value),
+            'min' => $this->validateMin($field, $value, (int)$ruleValue),
+            'max' => $this->validateMax($field, $value, (int)$ruleValue),
+            'numeric' => $this->validateNumeric($field, $value),
+            'integer' => $this->validateInteger($field, $value),
+            'alpha' => $this->validateAlpha($field, $value),
+            'alphanumeric' => $this->validateAlphanumeric($field, $value),
+            'url' => $this->validateUrl($field, $value),
+            'in' => $this->validateIn($field, $value, $ruleValue),
+            'exists' => $this->validateExists($field, $value, $ruleValue),
+            'unique' => $this->validateUnique($field, $value, $ruleValue),
+            'confirmed' => $this->validateConfirmed($field, $value),
+            'date' => $this->validateDate($field, $value),
+            'boolean' => $this->validateBoolean($field, $value),
+            'array' => $this->validateArray($field, $value),
+            'regex' => $this->validateRegex($field, $value, $ruleValue),
+            'nullable' => null, // Skip - allows null values
+            default => null, // Unknown rules are silently ignored
+        };
+    }
 
-            case 'email':
-                if (!empty($value) && !filter_var($value, FILTER_VALIDATE_EMAIL)) {
-                    $this->addError($field, $ruleName, 'The {field} must be a valid email address');
-                }
-                break;
+    private function validateRequired(string $field, mixed $value): void
+    {
+        if ($value === null || $value === '') {
+            $this->addError($field, 'required', 'The {field} field is required');
+        } elseif (is_string($value) && trim($value) === '') {
+            $this->addError($field, 'required', 'The {field} field is required');
+        }
+    }
 
-            case 'min':
-                if (!empty($value) && strlen($value) < $ruleValue) {
-                    $this->addError($field, $ruleName, "The {field} must be at least {$ruleValue} characters");
-                }
-                break;
+    private function validateEmail(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!filter_var($value, FILTER_VALIDATE_EMAIL)) {
+            $this->addError($field, 'email', 'The {field} must be a valid email address');
+        }
+    }
 
-            case 'max':
-                if (!empty($value) && strlen($value) > $ruleValue) {
-                    $this->addError($field, $ruleName, "The {field} must not exceed {$ruleValue} characters");
-                }
-                break;
+    private function validateMin(string $field, mixed $value, int $minLength): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (is_string($value) && mb_strlen($value) < $minLength) {
+            $this->addError($field, 'min', "The {field} must be at least {$minLength} characters");
+        }
+    }
 
-            case 'numeric':
-                if (!empty($value) && !is_numeric($value)) {
-                    $this->addError($field, $ruleName, 'The {field} must be a number');
-                }
-                break;
+    private function validateMax(string $field, mixed $value, int $maxLength): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (is_string($value) && mb_strlen($value) > $maxLength) {
+            $this->addError($field, 'max', "The {field} must not exceed {$maxLength} characters");
+        }
+    }
 
-            case 'integer':
-                if (!empty($value) && !filter_var($value, FILTER_VALIDATE_INT)) {
-                    $this->addError($field, $ruleName, 'The {field} must be an integer');
-                }
-                break;
+    private function validateNumeric(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!is_numeric($value)) {
+            $this->addError($field, 'numeric', 'The {field} must be a number');
+        }
+    }
 
-            case 'alpha':
-                if (!empty($value) && !ctype_alpha($value)) {
-                    $this->addError($field, $ruleName, 'The {field} must contain only letters');
-                }
-                break;
+    private function validateInteger(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!filter_var($value, FILTER_VALIDATE_INT) && $value !== 0 && $value !== '0') {
+            $this->addError($field, 'integer', 'The {field} must be an integer');
+        }
+    }
 
-            case 'alphanumeric':
-                if (!empty($value) && !ctype_alnum($value)) {
-                    $this->addError($field, $ruleName, 'The {field} must contain only letters and numbers');
-                }
-                break;
+    private function validateAlpha(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!ctype_alpha((string)$value)) {
+            $this->addError($field, 'alpha', 'The {field} must contain only letters');
+        }
+    }
 
-            case 'url':
-                if (!empty($value) && !filter_var($value, FILTER_VALIDATE_URL)) {
-                    $this->addError($field, $ruleName, 'The {field} must be a valid URL');
-                }
-                break;
+    private function validateAlphanumeric(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!ctype_alnum((string)$value)) {
+            $this->addError($field, 'alphanumeric', 'The {field} must contain only letters and numbers');
+        }
+    }
 
-            case 'in':
-                $allowed = explode(',', $ruleValue);
-                if (!empty($value) && !in_array($value, $allowed)) {
-                    $this->addError($field, $ruleName, "The {field} must be one of: {$ruleValue}");
-                }
-                break;
+    private function validateUrl(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!filter_var($value, FILTER_VALIDATE_URL)) {
+            $this->addError($field, 'url', 'The {field} must be a valid URL');
+        }
+    }
 
-            case 'unique':
-                // Format: unique:table,column,ignoreId,idColumn
-                $params = explode(',', $ruleValue);
-                $table = $params[0] ?? '';
-                $column = $params[1] ?? '';
-                $ignoreId = $params[2] ?? null;
-                $idColumn = $params[3] ?? 'id';
+    private function validateIn(string $field, mixed $value, ?string $ruleValue): void
+    {
+        if ($this->isEmpty($value) || $ruleValue === null) return;
+        $allowed = explode(',', $ruleValue);
+        if (!in_array((string)$value, $allowed, true)) {
+            $this->addError($field, 'in', "The {field} must be one of: {$ruleValue}");
+        }
+    }
 
-                if (!empty($value) && $this->checkUnique($table, $column, $value, $ignoreId, $idColumn)) {
-                    $this->addError($field, $ruleName, "The {field} has already been taken");
-                }
-                break;
+    private function validateExists(string $field, mixed $value, ?string $ruleValue): void
+    {
+        if ($this->isEmpty($value) || $ruleValue === null) return;
 
-            case 'confirmed':
-                $confirmField = $field . '_confirmation';
-                if ($value !== ($this->data[$confirmField] ?? null)) {
-                    $this->addError($field, $ruleName, 'The {field} confirmation does not match');
-                }
-                break;
+        // Format: exists:table,column
+        $params = explode(',', $ruleValue);
+        $table = $params[0] ?? '';
+        $column = $params[1] ?? 'id';
 
-            case 'date':
-                if (!empty($value) && !strtotime($value)) {
-                    $this->addError($field, $ruleName, 'The {field} must be a valid date');
-                }
-                break;
+        if (!$this->checkUnique($table, $column, $value)) {
+            $this->addError($field, 'exists', "The selected {field} does not exist");
+        }
+    }
 
-            case 'boolean':
-                if (!empty($value) && !in_array($value, [true, false, 0, 1, '0', '1'], true)) {
-                    $this->addError($field, $ruleName, 'The {field} must be true or false');
-                }
-                break;
+    private function validateUnique(string $field, mixed $value, ?string $ruleValue): void
+    {
+        if ($this->isEmpty($value) || $ruleValue === null) return;
+
+        // Format: unique:table,column,ignoreId,idColumn
+        $params = explode(',', $ruleValue);
+        $table = $params[0] ?? '';
+        $column = $params[1] ?? '';
+        $ignoreId = $params[2] ?? null;
+        $idColumn = $params[3] ?? 'id';
+
+        if ($this->checkUnique($table, $column, $value, $ignoreId, $idColumn)) {
+            $this->addError($field, 'unique', "The {field} has already been taken");
+        }
+    }
+
+    private function validateConfirmed(string $field, mixed $value): void
+    {
+        $confirmField = $field . '_confirmation';
+        if ($value !== ($this->data[$confirmField] ?? null)) {
+            $this->addError($field, 'confirmed', 'The {field} confirmation does not match');
+        }
+    }
+
+    private function validateDate(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!strtotime((string)$value)) {
+            $this->addError($field, 'date', 'The {field} must be a valid date');
+        }
+    }
+
+    private function validateBoolean(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!in_array($value, [true, false, 0, 1, '0', '1'], true)) {
+            $this->addError($field, 'boolean', 'The {field} must be true or false');
+        }
+    }
+
+    private function validateArray(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!is_array($value)) {
+            $this->addError($field, 'array', 'The {field} must be an array');
+        }
+    }
+
+    private function validateRegex(string $field, mixed $value, ?string $pattern): void
+    {
+        if ($this->isEmpty($value) || $pattern === null) return;
+        if (!preg_match($pattern, (string)$value)) {
+            $this->addError($field, 'regex', 'The {field} format is invalid');
         }
     }
 
     /**
-     * Parse rule string
+     * Check if a value is considered empty (but allows '0')
+     */
+    private function isEmpty(mixed $value): bool
+    {
+        return $value === null || $value === '' || (is_array($value) && empty($value));
+    }
+
+    /**
+     * Parse rule string into name and value
      */
     private function parseRule(string $rule): array
     {
-        if (strpos($rule, ':') !== false) {
-            [$name, $value] = explode(':', $rule, 2);
-            return [$name, $value];
+        $colonPos = strpos($rule, ':');
+        if ($colonPos !== false) {
+            return [substr($rule, 0, $colonPos), substr($rule, $colonPos + 1)];
         }
 
         return [$rule, null];
@@ -173,23 +268,19 @@ class Validator
             $message = $this->messages[$field];
         }
 
-        // Replace {field} placeholder
         $message = str_replace('{field}', $field, $message);
 
-        if (!isset($this->errors[$field])) {
-            $this->errors[$field] = [];
-        }
-
+        $this->errors[$field] ??= [];
         $this->errors[$field][] = $message;
     }
 
     /**
      * Check if value is unique in database
      */
-    private function checkUnique(string $table, string $column, $value, $ignoreId = null, string $idColumn = 'id'): bool
+    private function checkUnique(string $table, string $column, mixed $value, ?string $ignoreId = null, string $idColumn = 'id'): bool
     {
         try {
-            // Validate table and column names to prevent SQL injection
+            // Validate identifiers to prevent SQL injection
             if (!preg_match('/^[a-zA-Z0-9_]+$/', $table)) {
                 throw new \InvalidArgumentException("Invalid table name: {$table}");
             }
@@ -208,14 +299,13 @@ class Validator
                 $params['ignoreId'] = $ignoreId;
             }
 
-            $db = Database::getInstance()->getConnection();
+            $db = Database::connection();
             $stmt = $db->prepare($sql);
             $stmt->execute($params);
             $result = $stmt->fetch(\PDO::FETCH_ASSOC);
 
-            return $result['count'] > 0;
+            return ($result['count'] ?? 0) > 0;
         } catch (\Exception $e) {
-            // Log error in debug mode
             if (Env::get('APP_DEBUG') === 'true') {
                 error_log("Validator checkUnique error: " . $e->getMessage());
             }
@@ -232,7 +322,7 @@ class Validator
     }
 
     /**
-     * Get validated data
+     * Get validated data (only fields that passed validation)
      */
     public function validated(): array
     {

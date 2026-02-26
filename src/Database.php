@@ -10,16 +10,20 @@ use PDO;
  * Database Class - Backward Compatible Wrapper
  * 
  * This class maintains backward compatibility with existing code
- * while internally using the new DatabaseManager for multi-database support
+ * while internally using the new DatabaseManager for multi-database support.
+ * 
+ * Worker-mode safe: query log is reset per-request via resetQueryCount().
  */
 class Database
 {
     private static ?Database $instance = null;
     private PDO $connection;
 
+    private static int $queryCount = 0;
+    private static array $queries = [];
+
     private function __construct()
     {
-        // Use DatabaseManager to get default connection
         $this->connection = DatabaseManager::connection();
     }
 
@@ -32,19 +36,13 @@ class Database
         return self::$instance;
     }
 
-    private static int $queryCount = 0;
-    private static array $queries = [];
-
     public function getConnection(): PDO
     {
         return $this->connection;
     }
 
     /**
-     * Get connection by name (NEW METHOD)
-     * 
-     * @param string|null $name Connection name
-     * @return PDO
+     * Get connection by name
      */
     public static function connection(?string $name = null): PDO
     {
@@ -58,7 +56,7 @@ class Database
     {
         self::$queryCount++;
 
-        if (Env::get('APP_DEBUG', false) === 'true') {
+        if (Env::get('APP_DEBUG', 'false') === 'true') {
             self::$queries[] = [
                 'query' => $query,
                 'params' => $params,
@@ -92,7 +90,8 @@ class Database
     }
 
     /**
-     * Reset query counter
+     * Reset query counter and log
+     * Called per-request in worker mode to prevent memory buildup.
      */
     public static function resetQueryCount(): void
     {
@@ -102,7 +101,6 @@ class Database
 
     /**
      * Reset query log (alias for resetQueryCount)
-     * Used in FrankenPHP worker mode to clear state between requests
      */
     public static function resetQueryLog(): void
     {
@@ -127,10 +125,7 @@ class Database
     /**
      * Execute a callback within a transaction
      * 
-     * @param callable $callback
-     * @param string|null $connection
-     * @return mixed
-     * @throws \Exception
+     * Ensures rollback on any error, even non-Exception Throwables.
      */
     public static function transaction(callable $callback, ?string $connection = null): mixed
     {
@@ -150,7 +145,7 @@ class Database
     private function __clone() {}
 
     // Prevent unserialization
-    public function __wakeup()
+    public function __wakeup(): void
     {
         throw new \Exception("Cannot unserialize singleton");
     }

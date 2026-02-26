@@ -6,6 +6,12 @@ namespace Wibiesana\Padi\Core;
 
 /**
  * Base Controller
+ * 
+ * Provides common helper methods for all controllers:
+ * - Input validation
+ * - Response formatting
+ * - Role-based authorization
+ * - Status code management
  */
 abstract class Controller
 {
@@ -19,11 +25,13 @@ abstract class Controller
     }
 
     /**
-     * Validate request data
+     * Validate request data against rules
+     * 
+     * @throws ValidationException if validation fails
+     * @throws \Exception if rules are empty
      */
     protected function validate(array $rules, array $messages = []): array
     {
-        // Prevent empty validation rules
         if (empty($rules)) {
             throw new \Exception('Validation rules not configured. Please contact administrator.', 500);
         }
@@ -38,7 +46,7 @@ abstract class Controller
     }
 
     /**
-     * Return JSON response
+     * Return JSON response directly
      */
     protected function json(array $data, int $code = 200): void
     {
@@ -50,7 +58,6 @@ abstract class Controller
      */
     protected function databaseError(string $message = 'Database error occurred', ?\Exception $exception = null): void
     {
-        // Log the database error if exception is provided
         if ($exception) {
             Database::logQueryError($exception);
         }
@@ -61,8 +68,8 @@ abstract class Controller
             'message_code' => 'DATABASE_ERROR'
         ];
 
-        // Add database error details in debug mode
-        if (Env::get('APP_DEBUG', false) === 'true') {
+        // Add database error details in debug mode only
+        if (Env::get('APP_DEBUG', 'false') === 'true') {
             $lastError = DatabaseManager::getLastError();
             if ($lastError) {
                 $response['database_error'] = $lastError;
@@ -82,11 +89,11 @@ abstract class Controller
     }
 
     /**
-     * Check if current user has specific role
+     * Check if current user has a specific role
      */
     protected function hasRole(string $role): bool
     {
-        return $this->request->user && $this->request->user->role === $role;
+        return $this->request->user !== null && $this->request->user->role === $role;
     }
 
     /**
@@ -94,11 +101,13 @@ abstract class Controller
      */
     protected function hasAnyRole(array $roles): bool
     {
-        return $this->request->user && in_array($this->request->user->role, $roles, true);
+        return $this->request->user !== null && in_array($this->request->user->role, $roles, true);
     }
 
     /**
      * Require specific role or throw forbidden error
+     *
+     * @throws \Exception with 403 code if role doesn't match
      */
     protected function requireRole(string $role, ?string $message = null): void
     {
@@ -108,7 +117,9 @@ abstract class Controller
     }
 
     /**
-     * Require any of the specified roles or throw forbidden error
+     * Require any of the specified roles
+     *
+     * @throws \Exception with 403 code if no role matches
      */
     protected function requireAnyRole(array $roles, ?string $message = null): void
     {
@@ -123,7 +134,7 @@ abstract class Controller
      */
     protected function isOwner(int $resourceUserId): bool
     {
-        return $this->request->user && $this->request->user->user_id == $resourceUserId;
+        return $this->request->user !== null && (int)$this->request->user->user_id === $resourceUserId;
     }
 
     /**
@@ -135,7 +146,9 @@ abstract class Controller
     }
 
     /**
-     * Require admin role or resource owner
+     * Require admin role or resource ownership
+     *
+     * @throws \Exception with 403 code if neither admin nor owner
      */
     protected function requireAdminOrOwner(int $resourceUserId, ?string $message = null): void
     {
@@ -153,9 +166,9 @@ abstract class Controller
     }
 
     /**
-     * Return raw response (alias for direct return)
+     * Return raw response (auto-formatted by router)
      */
-    protected function raw($data, int $code = 200)
+    protected function raw(mixed $data, int $code = 200): mixed
     {
         $this->setStatusCode($code);
         return $data;
@@ -164,50 +177,31 @@ abstract class Controller
     /**
      * Return simple response format
      */
-    protected function simple($data, string $status = 'success', ?string $code = null, int $statusCode = 200)
+    protected function simple(mixed $data, string $status = 'success', ?string $code = null, int $statusCode = 200): array
     {
         $this->setStatusCode($statusCode);
         return [
             'status' => $status,
-            'code' => $code ?? $this->getStatusCodeName($statusCode),
+            'code' => $code ?? Router::getStatusCodeName($statusCode),
             'item' => $data
         ];
     }
 
     /**
-     * Return created response for auto-formatting
+     * Return created response (HTTP 201)
      */
-    protected function created($data = null)
+    protected function created(mixed $data = null): mixed
     {
         $this->setStatusCode(201);
         return $data;
     }
 
     /**
-     * Return no content response
+     * Return no content response (HTTP 204)
      */
-    protected function noContent()
+    protected function noContent(): null
     {
         $this->setStatusCode(204);
         return null;
-    }
-
-    /**
-     * Get status code name
-     */
-    private function getStatusCodeName(int $code): string
-    {
-        return match ($code) {
-            200 => 'SUCCESS',
-            201 => 'CREATED',
-            204 => 'NO_CONTENT',
-            400 => 'BAD_REQUEST',
-            401 => 'UNAUTHORIZED',
-            403 => 'FORBIDDEN',
-            404 => 'NOT_FOUND',
-            422 => 'VALIDATION_FAILED',
-            500 => 'INTERNAL_SERVER_ERROR',
-            default => 'SUCCESS'
-        };
     }
 }

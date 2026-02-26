@@ -1,10 +1,18 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Wibiesana\Padi\Core;
 
 use PDO;
 use Exception;
 
+/**
+ * Migrator - Database migration runner
+ * 
+ * Supports MySQL/MariaDB, PostgreSQL, and SQLite.
+ * Worker-mode safe: stateless, creates fresh instance per invocation.
+ */
 class Migrator
 {
     private PDO $db;
@@ -22,28 +30,26 @@ class Migrator
 
     private function createMigrationsTable(): void
     {
-        if ($this->driver === 'sqlite') {
-            $sql = "CREATE TABLE IF NOT EXISTS migrations (
+        $sql = match ($this->driver) {
+            'sqlite' => "CREATE TABLE IF NOT EXISTS migrations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 migration VARCHAR(255) NOT NULL,
                 batch INTEGER NOT NULL,
                 executed_at INTEGER DEFAULT (strftime('%s', 'now'))
-            )";
-        } elseif ($this->driver === 'pgsql') {
-            $sql = "CREATE TABLE IF NOT EXISTS migrations (
+            )",
+            'pgsql', 'postgres', 'postgresql' => "CREATE TABLE IF NOT EXISTS migrations (
                 id SERIAL PRIMARY KEY,
                 migration VARCHAR(255) NOT NULL,
                 batch INTEGER NOT NULL,
                 executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )";
-        } else {
-            $sql = "CREATE TABLE IF NOT EXISTS migrations (
+            )",
+            default => "CREATE TABLE IF NOT EXISTS migrations (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 migration VARCHAR(255) NOT NULL,
                 batch INT NOT NULL,
                 executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )";
-        }
+            )",
+        };
 
         $this->db->exec($sql);
     }
@@ -58,18 +64,16 @@ class Migrator
             return;
         }
 
-        sort($files); // Execute in order
+        sort($files);
         $toExecute = [];
 
         foreach ($files as $file) {
             $name = basename($file, '.php');
 
-            // Skip if already executed
-            if (in_array($name, $executed)) {
+            if (in_array($name, $executed, true)) {
                 continue;
             }
 
-            // Filter by table names if specified
             if ($tableFilter) {
                 $matchesFilter = false;
                 foreach ($tableFilter as $table) {
@@ -78,9 +82,7 @@ class Migrator
                         break;
                     }
                 }
-                if (!$matchesFilter) {
-                    continue;
-                }
+                if (!$matchesFilter) continue;
             }
 
             $toExecute[] = $file;
@@ -96,23 +98,21 @@ class Migrator
 
         foreach ($toExecute as $file) {
             $name = basename($file, '.php');
-            echo "Migrating: $name... ";
+            echo "Migrating: {$name}... ";
 
             try {
                 $migration = require $file;
 
-                // Support new class-based migrations
                 if (is_object($migration) && method_exists($migration, 'up')) {
                     $migration->up();
                 } elseif (is_array($migration) && isset($migration['up'])) {
-                    // Support old array-based migrations
                     $migration['up']($this->db);
                 } else {
                     throw new Exception("Invalid migration format");
                 }
 
-                $stmt = $this->db->prepare("INSERT INTO migrations (migration, batch) VALUES (?, ?)");
-                $stmt->execute([$name, $batch]);
+                $stmt = $this->db->prepare("INSERT INTO migrations (migration, batch) VALUES (:migration, :batch)");
+                $stmt->execute(['migration' => $name, 'batch' => $batch]);
 
                 echo "✓ DONE\n";
                 $successCount++;
@@ -122,7 +122,7 @@ class Migrator
             }
         }
 
-        echo "\nMigrated $successCount files successfully.\n";
+        echo "\nMigrated {$successCount} files successfully.\n";
     }
 
     public function rollback(int $steps = 1): void
@@ -134,33 +134,32 @@ class Migrator
                 return;
             }
 
-            $stmt = $this->db->prepare("SELECT migration FROM migrations WHERE batch = ? ORDER BY id DESC");
-            $stmt->execute([$lastBatch]);
+            $stmt = $this->db->prepare("SELECT migration FROM migrations WHERE batch = :batch ORDER BY id DESC");
+            $stmt->execute(['batch' => $lastBatch]);
             $migrations = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
             if (empty($migrations)) {
-                echo "No migrations found for batch $lastBatch.\n";
+                echo "No migrations found for batch {$lastBatch}.\n";
                 break;
             }
 
-            echo "Rolling back batch $lastBatch...\n";
+            echo "Rolling back batch {$lastBatch}...\n";
 
             foreach ($migrations as $name) {
-                echo "  Rolling back: $name... ";
+                echo "  Rolling back: {$name}... ";
                 $file = $this->migrationPath . '/' . $name . '.php';
 
                 if (file_exists($file)) {
                     $migration = require $file;
                     try {
-                        // Support new class-based migrations
                         if (is_object($migration) && method_exists($migration, 'down')) {
                             $migration->down();
                         } elseif (is_array($migration) && isset($migration['down'])) {
                             $migration['down']($this->db);
                         }
 
-                        $stmtDel = $this->db->prepare("DELETE FROM migrations WHERE migration = ?");
-                        $stmtDel->execute([$name]);
+                        $stmtDel = $this->db->prepare("DELETE FROM migrations WHERE migration = :migration");
+                        $stmtDel->execute(['migration' => $name]);
                         echo "✓ DONE\n";
                     } catch (Exception $e) {
                         echo "✗ FAILED: " . $e->getMessage() . "\n";
@@ -191,7 +190,7 @@ class Migrator
 
         foreach ($files as $file) {
             $name = basename($file, '.php');
-            $status = in_array($name, $executed) ? "✓ Migrated" : "✗ Pending";
+            $status = in_array($name, $executed, true) ? "✓ Migrated" : "✗ Pending";
             printf("%-50s %s\n", $name, $status);
         }
 

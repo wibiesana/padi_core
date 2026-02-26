@@ -1,12 +1,20 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Wibiesana\Padi\Core;
 
 use Monolog\Logger as Monolog;
-use Monolog\Handler\StreamHandler;
 use Monolog\Handler\RotatingFileHandler;
+use Monolog\Handler\StreamHandler;
 use Monolog\Formatter\LineFormatter;
 
+/**
+ * Logger - Application logging via Monolog
+ * 
+ * Worker-mode safe: logger instance persists across worker iterations.
+ * Shared hosting safe: file-based logging only, no external services required.
+ */
 class Logger
 {
     private static ?Monolog $logger = null;
@@ -18,22 +26,19 @@ class Logger
         $root = defined('PADI_ROOT') ? PADI_ROOT : dirname(__DIR__, 4);
         $configPath = $root . '/config/app.php';
 
-        if (!file_exists($configPath)) {
-            // Fallback config if not found
-            $config = ['app_name' => 'app'];
-        } else {
-            $config = require $configPath;
-        }
+        $config = file_exists($configPath)
+            ? require $configPath
+            : ['app_name' => 'app'];
 
         $logDir = $root . '/storage/logs';
 
         if (!is_dir($logDir)) {
-            mkdir($logDir, 0777, true);
+            mkdir($logDir, 0750, true);
         }
 
         self::$logger = new Monolog($config['app_name'] ?? 'app');
 
-        // Create a custom formatter
+        // Custom formatter
         $dateFormat = "Y-m-d H:i:s";
         $output = "[%datetime%] %level_name%: %message% %context% %extra%\n";
         $formatter = new LineFormatter($output, $dateFormat);
@@ -71,5 +76,11 @@ class Logger
     {
         self::init();
         self::$logger->debug($message, $context);
+    }
+
+    public static function critical(string $message, array $context = []): void
+    {
+        self::init();
+        self::$logger->critical($message, $context);
     }
 }

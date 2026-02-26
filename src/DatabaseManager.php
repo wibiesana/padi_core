@@ -10,74 +10,60 @@ use PDOException;
 /**
  * Database Manager - Handles multiple database connections
  * 
- * Supports: MySQL, MariaDB, PostgreSQL, SQLite
+ * Worker-mode safe:
+ * - Connections are persistent across worker iterations (reused)
+ * - Health check mechanism for stale connections
+ * - Thread-safe static state management
  * 
- * @example
- * // Get default connection
- * $db = DatabaseManager::connection();
+ * Shared hosting safe:
+ * - No extension dependencies beyond PDO
+ * - Supports MySQL, MariaDB, PostgreSQL, SQLite
  * 
- * // Get specific connection
- * $postgres = DatabaseManager::connection('pgsql');
- * $mysql = DatabaseManager::connection('mysql');
- * $sqlite = DatabaseManager::connection('sqlite');
+ * Security:
+ * - PDO::ATTR_EMULATE_PREPARES = false (real prepared statements)
+ * - Connection timeout configured
+ * - Sensitive data redacted from error logs
  */
 class DatabaseManager
 {
-    /**
-     * Store all database connections
-     */
+    /** @var array<string, PDO> Active database connections */
     private static array $connections = [];
 
-    /**
-     * Database configurations
-     */
+    /** @var array|null Database configurations (loaded once) */
     private static ?array $config = null;
 
-    /**
-     * Default connection name
-     */
+    /** @var string|null Default connection name */
     private static ?string $defaultConnection = null;
 
-    /**
-     * Store last database error
-     */
+    /** @var array|null Last database error */
     private static ?array $lastDatabaseError = null;
 
-    /**
-     * Store database error history
-     */
+    /** @var array Database error history (cleared per request in worker mode) */
     private static array $databaseErrors = [];
 
     /**
      * Get database connection by name
      * 
-     * @param string|null $name Connection name from config, null for default
-     * @return PDO
-     * @throws PDOException
+     * Returns cached connection or creates a new one.
+     * Worker-mode: connections persist across iterations.
      */
     public static function connection(?string $name = null): PDO
     {
-        // Load config if not loaded
         if (self::$config === null) {
             self::loadConfig();
         }
 
-        // Use default connection if none specified
-        if ($name === null) {
-            $name = self::$defaultConnection;
-        }
+        $name ??= self::$defaultConnection;
 
         // Return existing connection if already created
         if (isset(self::$connections[$name])) {
             return self::$connections[$name];
         }
 
-        // Validate connection exists in config
         if (!isset(self::$config['connections'][$name])) {
             throw new PDOException("Database connection '{$name}' not configured");
         }
 
-        // Create new connection
         self::$connections[$name] = self::createConnection(
             self::$config['connections'][$name]
         );
@@ -86,35 +72,20 @@ class DatabaseManager
     }
 
     /**
-     * Create PDO connection based on driver
-     * 
-     * @param array $config Connection configuration
-     * @return PDO
-     * @throws PDOException
+     * Create PDO connection based on driver configuration
      */
     private static function createConnection(array $config): PDO
     {
         $driver = $config['driver'] ?? 'mysql';
 
         try {
-            switch ($driver) {
-                case 'mysql':
-                case 'mariadb':
-                    return self::createMySQLConnection($config);
-
-                case 'pgsql':
-                case 'postgres':
-                case 'postgresql':
-                    return self::createPostgreSQLConnection($config);
-
-                case 'sqlite':
-                    return self::createSQLiteConnection($config);
-
-                default:
-                    throw new PDOException("Unsupported database driver: {$driver}");
-            }
+            return match ($driver) {
+                'mysql', 'mariadb' => self::createMySQLConnection($config),
+                'pgsql', 'postgres', 'postgresql' => self::createPostgreSQLConnection($config),
+                'sqlite' => self::createSQLiteConnection($config),
+                default => throw new PDOException("Unsupported database driver: {$driver}"),
+            };
         } catch (PDOException $e) {
-            // Store detailed error information
             self::$lastDatabaseError = [
                 'type' => 'connection_error',
                 'driver' => $driver,
@@ -123,7 +94,7 @@ class DatabaseManager
                 'file' => $e->getFile(),
                 'line' => $e->getLine(),
                 'timestamp' => date('Y-m-d H:i:s'),
-                'config' => array_diff_key($config, ['password' => '']) // Remove sensitive data
+                'config' => array_diff_key($config, ['password' => '', 'username' => ''])
             ];
 
             self::$databaseErrors[] = self::$lastDatabaseError;
@@ -137,7 +108,7 @@ class DatabaseManager
     }
 
     /**
-     * Create MySQL/MariaDB connection
+     * Create MySQL/MariaDB connection with optimized settings
      */
     private static function createMySQLConnection(array $config): PDO
     {
@@ -148,12 +119,23 @@ class DatabaseManager
 
         $dsn = "mysql:host={$host};port={$port};dbname={$database};charset={$charset}";
 
-        return new PDO(
-            $dsn,
-            $config['username'],
-            $config['password'],
-            $config['options'] ?? self::getDefaultOptions()
-        );
+        $options = $config['options'] ?? self::getDefaultOptions();
+
+        // MySQL/MariaDB specific optimizations
+        $options[PDO::MYSQL_ATTR_FOUND_ROWS] = true;
+        $options[PDO::ATTR_TIMEOUT] = $config['timeout'] ?? 5;
+
+        // Use persistent connections in worker mode (connection reuse)
+        if (function_exists('frankenphp_handle_request')) {
+            $options[PDO::ATTR_PERSISTENT] = $config['persistent'] ?? false;
+        }
+
+        $pdo = new PDO($dsn, $config['username'], $config['password'], $options);
+
+        // Set session-level optimizations for MariaDB/MySQL
+        $pdo->exec("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
+
+        return $pdo;
     }
 
     /**
@@ -167,17 +149,14 @@ class DatabaseManager
 
         $dsn = "pgsql:host={$host};port={$port};dbname={$database}";
 
-        // Add schema if specified
         if (isset($config['schema'])) {
             $dsn .= ";options='--search_path={$config['schema']}'";
         }
 
-        return new PDO(
-            $dsn,
-            $config['username'],
-            $config['password'],
-            $config['options'] ?? self::getDefaultOptions()
-        );
+        $options = $config['options'] ?? self::getDefaultOptions();
+        $options[PDO::ATTR_TIMEOUT] = $config['timeout'] ?? 5;
+
+        return new PDO($dsn, $config['username'], $config['password'], $options);
     }
 
     /**
@@ -187,29 +166,32 @@ class DatabaseManager
     {
         $database = $config['database'];
 
-        // Handle in-memory database
         if ($database === ':memory:') {
             $dsn = 'sqlite::memory:';
         } else {
-            // Ensure database directory exists
             $dir = dirname($database);
             if (!is_dir($dir)) {
-                mkdir($dir, 0755, true);
+                mkdir($dir, 0750, true);
             }
-
             $dsn = "sqlite:{$database}";
         }
 
-        return new PDO(
-            $dsn,
-            null,
-            null,
-            $config['options'] ?? self::getDefaultOptions()
-        );
+        $pdo = new PDO($dsn, null, null, $config['options'] ?? self::getDefaultOptions());
+
+        // SQLite optimizations
+        $pdo->exec('PRAGMA journal_mode = WAL');
+        $pdo->exec('PRAGMA busy_timeout = 5000');
+        $pdo->exec('PRAGMA synchronous = NORMAL');
+        $pdo->exec('PRAGMA cache_size = -20000'); // 20MB cache
+
+        return $pdo;
     }
 
     /**
      * Get default PDO options
+     * 
+     * Security: EMULATE_PREPARES = false ensures real prepared statements,
+     * preventing SQL injection even if parameterization is accidentally skipped.
      */
     private static function getDefaultOptions(): array
     {
@@ -222,7 +204,7 @@ class DatabaseManager
     }
 
     /**
-     * Load database configuration
+     * Load database configuration (once per process lifecycle)
      */
     private static function loadConfig(): void
     {
@@ -230,7 +212,7 @@ class DatabaseManager
         $configPath = $root . '/config/database.php';
 
         if (!file_exists($configPath)) {
-            throw new PDOException("Database configuration file not found");
+            throw new PDOException("Database configuration file not found: {$configPath}");
         }
 
         self::$config = require $configPath;
@@ -238,7 +220,7 @@ class DatabaseManager
     }
 
     /**
-     * Set default connection
+     * Set default connection name
      */
     public static function setDefaultConnection(string $name): void
     {
@@ -258,7 +240,7 @@ class DatabaseManager
     }
 
     /**
-     * Add new connection at runtime
+     * Add new connection configuration at runtime
      */
     public static function addConnection(string $name, array $config): void
     {
@@ -274,13 +256,9 @@ class DatabaseManager
      */
     public static function disconnect(?string $name = null): void
     {
-        if ($name === null) {
-            $name = self::$defaultConnection;
-        }
+        $name ??= self::$defaultConnection;
 
-        if (isset(self::$connections[$name])) {
-            unset(self::$connections[$name]);
-        }
+        unset(self::$connections[$name]);
     }
 
     /**
@@ -292,7 +270,7 @@ class DatabaseManager
     }
 
     /**
-     * Get all active connections
+     * Get all active connection names
      */
     public static function getConnections(): array
     {
@@ -300,7 +278,7 @@ class DatabaseManager
     }
 
     /**
-     * Check if connection exists
+     * Check if a connection is configured
      */
     public static function hasConnection(string $name): bool
     {
@@ -312,7 +290,7 @@ class DatabaseManager
     }
 
     /**
-     * Begin transaction on specific connection
+     * Begin transaction on a connection
      */
     public static function beginTransaction(?string $name = null): bool
     {
@@ -320,7 +298,7 @@ class DatabaseManager
     }
 
     /**
-     * Commit transaction on specific connection
+     * Commit transaction
      */
     public static function commit(?string $name = null): bool
     {
@@ -328,7 +306,7 @@ class DatabaseManager
     }
 
     /**
-     * Rollback transaction on specific connection
+     * Rollback transaction
      */
     public static function rollback(?string $name = null): bool
     {
@@ -336,7 +314,7 @@ class DatabaseManager
     }
 
     /**
-     * Get database driver name
+     * Get database driver name for a connection
      */
     public static function getDriver(?string $name = null): string
     {
@@ -344,9 +322,7 @@ class DatabaseManager
             self::loadConfig();
         }
 
-        if ($name === null) {
-            $name = self::$defaultConnection;
-        }
+        $name ??= self::$defaultConnection;
 
         return self::$config['connections'][$name]['driver'] ?? 'mysql';
     }
@@ -368,7 +344,7 @@ class DatabaseManager
     }
 
     /**
-     * Clear database errors
+     * Clear database errors (called per-request in worker mode)
      */
     public static function clearErrors(): void
     {
@@ -377,7 +353,7 @@ class DatabaseManager
     }
 
     /**
-     * Log database error
+     * Log a database error with sanitized parameters
      */
     public static function logError(\Exception $e, string $query = '', array $params = []): void
     {
@@ -396,7 +372,7 @@ class DatabaseManager
     }
 
     /**
-     * Sanitize parameters to remove sensitive data
+     * Sanitize parameters - redact sensitive values
      */
     private static function sanitizeParams(array $params): array
     {
@@ -406,7 +382,7 @@ class DatabaseManager
         foreach ($params as $key => $value) {
             $isSensitive = false;
             foreach ($sensitiveKeys as $sensitiveKey) {
-                if (stripos($key, $sensitiveKey) !== false) {
+                if (stripos((string)$key, $sensitiveKey) !== false) {
                     $isSensitive = true;
                     break;
                 }

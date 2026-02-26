@@ -1,19 +1,46 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Wibiesana\Padi\Core;
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
+/**
+ * Email Helper - Send emails via PHPMailer
+ * 
+ * Worker-mode safe: creates fresh PHPMailer instance per send.
+ * Shared hosting safe: supports SMTP and PHP mail().
+ */
 class Email
 {
     /**
      * Send an email
+     * 
+     * @param string $to Recipient email address
+     * @param string $subject Email subject
+     * @param string $body HTML email body
+     * @param array $attachments File paths to attach
+     * @return bool Success status
      */
     public static function send(string $to, string $subject, string $body, array $attachments = []): bool
     {
+        // Validate email address
+        if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
+            Logger::error("Invalid email recipient", ['to' => $to]);
+            return false;
+        }
+
         $root = defined('PADI_ROOT') ? PADI_ROOT : dirname(__DIR__, 4);
-        $config = require $root . '/config/mail.php';
+        $configPath = $root . '/config/mail.php';
+
+        if (!file_exists($configPath)) {
+            Logger::error("Mail configuration file not found");
+            return false;
+        }
+
+        $config = require $configPath;
         $mail = new PHPMailer(true);
 
         try {
@@ -26,6 +53,7 @@ class Email
                 $mail->Password   = $config['password'];
                 $mail->SMTPSecure = $config['encryption'] === 'tls' ? PHPMailer::ENCRYPTION_STARTTLS : PHPMailer::ENCRYPTION_SMTPS;
                 $mail->Port       = $config['port'];
+                $mail->Timeout    = $config['timeout'] ?? 30;
             }
 
             // Recipients
@@ -34,12 +62,13 @@ class Email
 
             // Content
             $mail->isHTML(true);
+            $mail->CharSet = 'UTF-8';
             $mail->Subject = $subject;
             $mail->Body    = $body;
 
             // Attachments
             foreach ($attachments as $attachment) {
-                if (file_exists($attachment)) {
+                if (file_exists($attachment) && is_file($attachment)) {
                     $mail->addAttachment($attachment);
                 }
             }
