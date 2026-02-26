@@ -54,7 +54,7 @@ class Application
         $this->isDevelopment = Env::get('APP_ENV') === 'development';
 
         // Prepare routing (loaded once, reused across worker requests)
-        $routesPath = $this->basePath . '/routes/api.php';
+        $routesPath = $this->basePath . '/app/Routes/api.php';
         if (file_exists($routesPath)) {
             $this->router = require $routesPath;
         }

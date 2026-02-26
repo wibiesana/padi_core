@@ -243,7 +243,7 @@ PHP;
         if ($options['write'] ?? false) {
             $this->appendRoutesToFile($routes, $prefix);
         } else {
-            echo "💡 Routes generated. Add this to routes/api.php manually or use --write flag:\n\n";
+            echo "💡 Routes generated. Add this to app/Routes/api.php manually or use --write flag:\n\n";
             echo $routes . "\n";
         }
 
@@ -1185,7 +1185,7 @@ PHP;
      */
     private function appendRoutesToFile(string $routes, string $prefix): void
     {
-        $filePath = $this->baseDir . '/routes/api.php';
+        $filePath = $this->baseDir . '/app/Routes/api.php';
         if (!file_exists($filePath)) return;
 
         $content = file_get_contents($filePath);
@@ -1207,11 +1207,11 @@ PHP;
         if ($lastReturnPos !== false) {
             $newContent = substr($content, 0, $lastReturnPos) . "\n" . $routes . "\n" . substr($content, $lastReturnPos);
             file_put_contents($filePath, $newContent);
-            echo "✓ Routes for '{$prefix}' automatically appended to routes/api.php\n";
+            echo "✓ Routes for '{$prefix}' automatically appended to app/Routes/api.php\n";
         } else {
             // Just append at the end if no return found
             file_put_contents($filePath, "\n" . $routes, FILE_APPEND);
-            echo "✓ Routes for '{$prefix}' appended to end of routes/api.php\n";
+            echo "✓ Routes for '{$prefix}' appended to end of app/Routes/api.php\n";
         }
     }
 
