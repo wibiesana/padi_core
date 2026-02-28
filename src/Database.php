@@ -107,6 +107,17 @@ class Database
         self::resetQueryCount();
     }
 
+    /**
+     * Reset singleton instance (worker mode cleanup)
+     * 
+     * When database connections are recycled (e.g., after health check failure),
+     * the singleton may hold a stale PDO reference. Call this to force re-creation.
+     */
+    public static function resetInstance(): void
+    {
+        self::$instance = null;
+    }
+
     public static function beginTransaction(?string $connection = null): bool
     {
         return DatabaseManager::beginTransaction($connection);

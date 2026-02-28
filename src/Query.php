@@ -22,7 +22,7 @@ use PDO;
  */
 class Query
 {
-    public const VERSION = '2.0.0';
+    public const VERSION = '2.0.3';
 
     protected ?PDO $db = null;
     protected ?string $connectionName = null;
@@ -52,6 +52,29 @@ class Query
     public function autoIlike(bool $value = true): self
     {
         $this->autoIlike = $value;
+        return $this;
+    }
+
+    /**
+     * Reset query builder state for reuse
+     * 
+     * In worker mode, this prevents stale state from leaking between requests
+     * when a Query object is reused.
+     */
+    public function reset(): self
+    {
+        $this->select = ['*'];
+        $this->from = null;
+        $this->where = [];
+        $this->params = [];
+        $this->manualParams = [];
+        $this->join = [];
+        $this->orderBy = [];
+        $this->groupBy = [];
+        $this->having = null;
+        $this->limit = null;
+        $this->offset = null;
+        $this->distinct = false;
         return $this;
     }
 
@@ -155,6 +178,17 @@ class Query
     public function whereNotIn(string $column, array $values): self
     {
         return $this->andWhere(['NOT IN', $column, $values]);
+    }
+
+    /**
+     * Add raw WHERE condition (use with caution, always bind params)
+     * 
+     * @param string $expression Raw SQL expression (e.g., "price > :min_price")
+     * @param array $params Parameters to bind
+     */
+    public function whereRaw(string $expression, array $params = []): self
+    {
+        return $this->andWhere($expression, $params);
     }
 
     /**
@@ -305,10 +339,18 @@ class Query
         // Get total count first (before applying limit/offset)
         $total = $this->count();
 
+        // Save state before modifying
+        $oldLimit = $this->limit;
+        $oldOffset = $this->offset;
+
         $this->limit($perPage);
         $this->offset(($page - 1) * $perPage);
 
         $data = $this->all();
+
+        // Restore state so the query builder can be reused
+        $this->limit = $oldLimit;
+        $this->offset = $oldOffset;
 
         return [
             'data' => $data,
@@ -397,10 +439,23 @@ class Query
 
     /**
      * Check if any records exist
+     * 
+     * Optimized: uses SELECT 1 LIMIT 1 instead of fetching entire row.
      */
     public function exists(): bool
     {
-        return $this->one() !== null;
+        $oldSelect = $this->select;
+        $oldLimit = $this->limit;
+
+        $this->select = ['1'];
+        $this->limit = 1;
+
+        $result = $this->scalar();
+
+        $this->select = $oldSelect;
+        $this->limit = $oldLimit;
+
+        return $result !== false;
     }
 
     /**

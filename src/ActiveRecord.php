@@ -58,6 +58,17 @@ abstract class ActiveRecord
     private static array $columnsCache = [];
 
     /**
+     * Clear columns cache.
+     * 
+     * In worker mode, call this during lifecycle management to free memory.
+     * Column metadata is stable so the cache will rebuild as needed.
+     */
+    public static function clearColumnsCache(): void
+    {
+        self::$columnsCache = [];
+    }
+
+    /**
      * Get the LIKE operator based on the database driver
      * 
      * @return string 'LIKE' or 'ILIKE'
@@ -435,6 +446,20 @@ abstract class ActiveRecord
     }
 
     /**
+     * Find record by ID or throw 404 exception
+     * 
+     * @throws \Exception When record is not found (HTTP 404)
+     */
+    public function findOrFail(int|string|array $id, array $columns = ['*']): array
+    {
+        $result = $this->find($id, $columns);
+        if ($result === null) {
+            throw new \Exception("Record not found in {$this->table}", 404);
+        }
+        return $result;
+    }
+
+    /**
      * Helper to get primary key conditions
      */
     protected function getPkConditions(int|string|array $id): array
@@ -600,62 +625,76 @@ abstract class ActiveRecord
 
     /**
      * Batch insert multiple records
+     * 
+     * Automatically chunks large datasets to respect max_allowed_packet
+     * limits on shared hosting (typically 1MB-16MB).
+     * 
+     * @param array $rows Array of records to insert
+     * @param int $chunkSize Max rows per INSERT statement (default 500)
      */
-    public function batchInsert(array $rows): bool
+    public function batchInsert(array $rows, int $chunkSize = 500): bool
     {
         if (empty($rows)) {
             return false;
         }
 
-        $preparedRows = [];
-        foreach ($rows as $row) {
-            $row = $this->filterFillable($row);
-            if ($this->beforeSave($row, true)) {
-                $preparedRows[] = $row;
+        $chunks = array_chunk($rows, $chunkSize);
+        $success = true;
+
+        foreach ($chunks as $chunk) {
+            $preparedRows = [];
+            foreach ($chunk as $row) {
+                $row = $this->filterFillable($row);
+                if ($this->beforeSave($row, true)) {
+                    $preparedRows[] = $row;
+                }
+            }
+
+            if (empty($preparedRows)) {
+                continue;
+            }
+
+            // Use keys from the first row to determine columns
+            $firstRow = reset($preparedRows);
+            $columns = array_keys($firstRow);
+            $columnNames = implode(', ', $columns);
+
+            $values = [];
+            $params = [];
+
+            foreach ($preparedRows as $index => $row) {
+                $rowPlaceholders = [];
+                foreach ($columns as $col) {
+                    // Use index to make unique param names
+                    $paramName = ":{$col}_{$index}";
+                    $rowPlaceholders[] = $paramName;
+                    $params[$paramName] = $row[$col] ?? null;
+                }
+                $values[] = '(' . implode(', ', $rowPlaceholders) . ')';
+            }
+
+            $valuesClause = implode(', ', $values);
+            $sql = "INSERT INTO {$this->table} ({$columnNames}) VALUES {$valuesClause}";
+
+            try {
+                $stmt = $this->db->prepare($sql);
+                $result = $stmt->execute($params);
+                Database::logQuery($sql, array_slice($params, 0, 10));
+
+                if (!$result) {
+                    $success = false;
+                }
+            } catch (\PDOException $e) {
+                Database::logQueryError($e, $sql, array_slice($params, 0, 10));
+                throw $e;
             }
         }
 
-        if (empty($preparedRows)) {
-            return false;
+        if ($success) {
+            Cache::delete("table_count:{$this->table}");
         }
 
-        // Use keys from the first row to determine columns
-        $firstRow = reset($preparedRows);
-        $columns = array_keys($firstRow);
-        $columnNames = implode(', ', $columns);
-
-        $values = [];
-        $params = [];
-
-        foreach ($preparedRows as $index => $row) {
-            $rowPlaceholders = [];
-            foreach ($columns as $col) {
-                // Use index to make unique param names
-                $paramName = ":{$col}_{$index}";
-                $rowPlaceholders[] = $paramName;
-                $params[$paramName] = $row[$col] ?? null;
-            }
-            $values[] = '(' . implode(', ', $rowPlaceholders) . ')';
-        }
-
-        $valuesClause = implode(', ', $values);
-        $sql = "INSERT INTO {$this->table} ({$columnNames}) VALUES {$valuesClause}";
-
-        try {
-            $stmt = $this->db->prepare($sql);
-            $result = $stmt->execute($params);
-            // Logging massive query might be bad, truncating params in log
-            Database::logQuery($sql, array_slice($params, 0, 10)); // Log only first 10 params
-
-            if ($result) {
-                Cache::delete("table_count:{$this->table}");
-            }
-
-            return $result;
-        } catch (\PDOException $e) {
-            Database::logQueryError($e, $sql, array_slice($params, 0, 10));
-            throw $e;
-        }
+        return $success;
     }
 
     /**
@@ -984,5 +1023,75 @@ abstract class ActiveRecord
     protected function afterDelete(int|string|array $id): void
     {
         // Override in model
+    }
+
+    /**
+     * Count records with optional conditions
+     * 
+     * @param array $conditions Key-value pairs for WHERE clause
+     */
+    public function count(array $conditions = []): int
+    {
+        $where = [];
+        $params = [];
+
+        foreach ($conditions as $key => $value) {
+            if (!preg_match('/^[a-zA-Z0-9_]+$/', $key)) {
+                throw new \InvalidArgumentException("Invalid condition key: {$key}");
+            }
+            $where[] = "{$key} = :{$key}";
+            $params[$key] = $value;
+        }
+
+        $whereClause = !empty($where) ? ' WHERE ' . implode(' AND ', $where) : '';
+        $sql = "SELECT COUNT(*) as total FROM {$this->table}{$whereClause}";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        Database::logQuery($sql, $params);
+
+        return (int)$stmt->fetch(PDO::FETCH_ASSOC)['total'];
+    }
+
+    /**
+     * Insert or update on duplicate key (MariaDB/MySQL)
+     * 
+     * Uses INSERT ... ON DUPLICATE KEY UPDATE for atomic upsert operations.
+     * 
+     * @param array $data Data to insert
+     * @param array $updateColumns Columns to update on duplicate (defaults to all data columns)
+     * @return int|string Last insert ID
+     */
+    public function upsert(array $data, array $updateColumns = []): int|string
+    {
+        $data = $this->filterFillable($data);
+
+        if (!$this->beforeSave($data, true)) {
+            return 0;
+        }
+
+        $columns = implode(', ', array_keys($data));
+        $placeholders = ':' . implode(', :', array_keys($data));
+
+        $updateParts = [];
+        $updateCols = !empty($updateColumns) ? $updateColumns : array_keys($data);
+        foreach ($updateCols as $col) {
+            $updateParts[] = "{$col} = VALUES({$col})";
+        }
+        $updateClause = implode(', ', $updateParts);
+
+        $sql = "INSERT INTO {$this->table} ({$columns}) VALUES ({$placeholders}) ON DUPLICATE KEY UPDATE {$updateClause}";
+
+        try {
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute($data);
+            Database::logQuery($sql, $data);
+
+            Cache::delete("table_count:{$this->table}");
+            return $this->db->lastInsertId();
+        } catch (\PDOException $e) {
+            Database::logQueryError($e, $sql, $data);
+            throw $e;
+        }
     }
 }

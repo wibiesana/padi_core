@@ -236,6 +236,16 @@ class Application
                     error_log("[padi] DB reconnect for {$connName}: {$e->getMessage()}");
                 }
                 DatabaseManager::disconnect($connName);
+
+                // Force immediate reconnect so the current request has a working connection
+                try {
+                    DatabaseManager::connection($connName);
+                } catch (PDOException $reconnectError) {
+                    error_log("[padi] DB reconnect FAILED for {$connName}: {$reconnectError->getMessage()}");
+                }
+
+                // Reset Database singleton since it may hold stale PDO reference
+                Database::resetInstance();
             }
         }
     }
@@ -285,6 +295,9 @@ class Application
         $_POST = [];
         $_FILES = [];
         $_COOKIE = [];
+
+        // Reset database singleton to prevent stale PDO references
+        Database::resetInstance();
     }
 
     /**
@@ -306,6 +319,8 @@ class Application
 
                 if ($count >= $maxRequests) {
                     // Graceful worker restart to prevent memory buildup
+                    // Clear column metadata cache before restart
+                    ActiveRecord::clearColumnsCache();
                     gc_collect_cycles();
                     exit(0);
                 }

@@ -41,6 +41,12 @@ class DatabaseManager
     /** @var array Database error history (cleared per request in worker mode) */
     private static array $databaseErrors = [];
 
+    /** @var int Maximum error history size per-request to prevent memory buildup */
+    private static int $maxErrorHistory = 50;
+
+    /** @var int Default max connections for shared hosting protection */
+    private static int $defaultMaxConnections = 10;
+
     /**
      * Get database connection by name
      * 
@@ -62,6 +68,15 @@ class DatabaseManager
 
         if (!isset(self::$config['connections'][$name])) {
             throw new PDOException("Database connection '{$name}' not configured");
+        }
+
+        // Connection limit protection (important for shared hosting)
+        $maxConn = (int)(self::$config['max_connections'] ?? self::$defaultMaxConnections);
+        if (count(self::$connections) >= $maxConn) {
+            throw new PDOException(
+                "Maximum database connections ({$maxConn}) reached. " .
+                    "Configure 'max_connections' in config/database.php to increase."
+            );
         }
 
         self::$connections[$name] = self::createConnection(
@@ -134,6 +149,12 @@ class DatabaseManager
 
         // Set session-level optimizations for MariaDB/MySQL
         $pdo->exec("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
+
+        // Set session timeout (critical for shared hosting with low wait_timeout)
+        // Prevents premature connection closure during long worker processes
+        $waitTimeout = (int)($config['wait_timeout'] ?? 28800);
+        $pdo->exec("SET SESSION wait_timeout = {$waitTimeout}");
+        $pdo->exec("SET SESSION interactive_timeout = {$waitTimeout}");
 
         return $pdo;
     }
@@ -278,6 +299,61 @@ class DatabaseManager
     }
 
     /**
+     * Get number of active connections
+     */
+    public static function getConnectionCount(): int
+    {
+        return count(self::$connections);
+    }
+
+    /**
+     * Check if a specific connection is active and healthy
+     * 
+     * @param string|null $name Connection name (null for default)
+     * @return bool True if connection is active and responds to ping
+     */
+    public static function isConnected(?string $name = null): bool
+    {
+        $name ??= self::$defaultConnection;
+
+        if (!isset(self::$connections[$name])) {
+            return false;
+        }
+
+        try {
+            self::$connections[$name]->query('SELECT 1');
+            return true;
+        } catch (PDOException $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Get connection status summary (for health endpoints / monitoring)
+     * 
+     * Useful for shared hosting monitoring where connection limits are tight.
+     * 
+     * @return array{active_connections: int, connections: array<string, string>, errors_count: int}
+     */
+    public static function getStatus(): array
+    {
+        $status = [];
+        foreach (self::$connections as $name => $pdo) {
+            try {
+                $pdo->query('SELECT 1');
+                $status[$name] = 'healthy';
+            } catch (PDOException $e) {
+                $status[$name] = 'stale';
+            }
+        }
+        return [
+            'active_connections' => count(self::$connections),
+            'connections' => $status,
+            'errors_count' => count(self::$databaseErrors),
+        ];
+    }
+
+    /**
      * Check if a connection is configured
      */
     public static function hasConnection(string $name): bool
@@ -369,6 +445,11 @@ class DatabaseManager
         ];
 
         self::$databaseErrors[] = self::$lastDatabaseError;
+
+        // Cap error history to prevent memory buildup in worker mode
+        if (count(self::$databaseErrors) > self::$maxErrorHistory) {
+            self::$databaseErrors = array_slice(self::$databaseErrors, -self::$maxErrorHistory);
+        }
     }
 
     /**
