@@ -22,7 +22,7 @@ use PDO;
  */
 class Query
 {
-    public const VERSION = '2.0.3';
+    public const VERSION = '2.0.4';
 
     protected ?PDO $db = null;
     protected ?string $connectionName = null;
@@ -169,7 +169,7 @@ class Query
      */
     public function whereIn(string $column, array $values): self
     {
-        return $this->andWhere(['IN', $column, $values]);
+        return $this->andWhere([$column, 'IN', $values]);
     }
 
     /**
@@ -177,7 +177,7 @@ class Query
      */
     public function whereNotIn(string $column, array $values): self
     {
-        return $this->andWhere(['NOT IN', $column, $values]);
+        return $this->andWhere([$column, 'NOT IN', $values]);
     }
 
     /**
@@ -196,7 +196,7 @@ class Query
      */
     public function whereBetween(string $column, mixed $start, mixed $end): self
     {
-        return $this->andWhere(['BETWEEN', $column, [$start, $end]]);
+        return $this->andWhere([$column, 'BETWEEN', [$start, $end]]);
     }
 
     /**
@@ -204,11 +204,7 @@ class Query
      */
     public function whereNotBetween(string $column, mixed $start, mixed $end): self
     {
-        $p1 = ":nbet_" . count($this->params) . "_1";
-        $p2 = ":nbet_" . count($this->params) . "_2";
-        $this->params[$p1] = $start;
-        $this->params[$p2] = $end;
-        return $this->andWhere("{$column} NOT BETWEEN {$p1} AND {$p2}");
+        return $this->andWhere([$column, 'NOT BETWEEN', [$start, $end]]);
     }
 
     /**
@@ -786,6 +782,18 @@ class Query
 
     /**
      * Parse a single condition into SQL
+     * 
+     * Supported formats:
+     *   Hash:       ['column' => 'value', 'col2' => [1,2,3]]
+     *   Grouping:   ['AND', [...], [...]] or ['OR', [...], [...]]
+     *   Unified:    [column, operator, value]  (canonical format for all operators)
+     * 
+     * Supported operators in unified format:
+     *   Comparison: =, !=, <>, >, <, >=, <=
+     *   Pattern:    LIKE, NOT LIKE (auto-wraps % and auto-converts to ILIKE on PostgreSQL)
+     *   Set:        IN, NOT IN
+     *   Range:      BETWEEN, NOT BETWEEN
+     *   Null:       IS, IS NOT
      */
     protected function parseCondition(array $condition): string
     {
@@ -815,30 +823,11 @@ class Query
             return implode(' AND ', $parts);
         }
 
-        $operator = strtoupper((string)($condition[0] ?? ''));
+        $first = strtoupper((string)($condition[0] ?? ''));
 
-        // LIKE / NOT LIKE
-        if ($operator === 'LIKE' || $operator === 'NOT LIKE') {
-            $column = $condition[1];
-            $value = $condition[2];
-            $paramName = ":p_" . count($this->params) . "_" . str_replace('.', '_', (string)$column);
-
-            // Auto-wrap with % if not already present
-            if (!str_contains($value, '%')) {
-                $value = "%{$value}%";
-            }
-
-            $currentOperator = $operator;
-            if ($this->autoIlike && DatabaseManager::getDriver($this->connectionName) === 'pgsql') {
-                $currentOperator = ($operator === 'LIKE') ? 'ILIKE' : 'NOT ILIKE';
-            }
-
-            $this->params[$paramName] = $value;
-            return "{$column} {$currentOperator} {$paramName}";
-        }
-
-        // AND / OR grouping
-        if ($operator === 'AND' || $operator === 'OR') {
+        // AND / OR grouping: ['AND', [...], [...]]
+        // These remain operator-first because they group multiple sub-conditions
+        if ($first === 'AND' || $first === 'OR') {
             array_shift($condition);
             $parts = [];
             foreach ($condition as $subCondition) {
@@ -848,15 +837,69 @@ class Query
                     $parts[] = $subCondition;
                 }
             }
-            return implode(" {$operator} ", $parts);
+            return implode(" {$first} ", $parts);
         }
 
-        // Three-element format: [column, operator, value]
+        // Unified three-element format: [column, operator, value]
+        // Also supports legacy [operator, column, value] for LIKE backward compatibility
         if (count($condition) === 3) {
-            $column = $condition[0];
-            $op = strtoupper($condition[1]);
-            $value = $condition[2];
+            // Known SQL operators for smart detection
+            $knownOps = [
+                '=',
+                '!=',
+                '<>',
+                '>',
+                '<',
+                '>=',
+                '<=',
+                'LIKE',
+                'NOT LIKE',
+                'IN',
+                'NOT IN',
+                'BETWEEN',
+                'NOT BETWEEN',
+                'IS',
+                'IS NOT'
+            ];
 
+            $middle = strtoupper((string)$condition[1]);
+
+            if (in_array($middle, $knownOps)) {
+                // Canonical format: [column, operator, value]
+                $column = $condition[0];
+                $op = $middle;
+                $value = $condition[2];
+            } elseif (in_array($first, $knownOps)) {
+                // Legacy format: [operator, column, value] (backward compatible)
+                $op = $first;
+                $column = $condition[1];
+                $value = $condition[2];
+            } else {
+                // Unknown format, treat as [column, operator, value]
+                $column = $condition[0];
+                $op = $middle;
+                $value = $condition[2];
+            }
+
+            // LIKE / NOT LIKE — auto-% wrapping and PostgreSQL ILIKE conversion
+            if ($op === 'LIKE' || $op === 'NOT LIKE') {
+                $paramName = ":p_" . count($this->params) . "_" . str_replace('.', '_', (string)$column);
+
+                // Auto-wrap with % if not already present
+                if (is_string($value) && !str_contains($value, '%')) {
+                    $value = "%{$value}%";
+                }
+
+                $currentOperator = $op;
+                if ($this->autoIlike && DatabaseManager::getDriver($this->connectionName) === 'pgsql') {
+                    $currentOperator = ($op === 'LIKE') ? 'ILIKE' : 'NOT ILIKE';
+                }
+
+                $this->params[$paramName] = $value;
+                return "{$column} {$currentOperator} {$paramName}";
+            }
+
+            // IN / NOT IN
             if ($op === 'IN' || $op === 'NOT IN') {
                 if (is_array($value)) {
                     $placeholders = [];
@@ -870,15 +913,23 @@ class Query
                 return "{$column} {$op} ({$value})";
             }
 
-            if ($op === 'BETWEEN' && is_array($value) && count($value) === 2) {
+            // BETWEEN / NOT BETWEEN
+            if (($op === 'BETWEEN' || $op === 'NOT BETWEEN') && is_array($value) && count($value) === 2) {
                 $p1 = ":bet_" . count($this->params) . "_1";
                 $p2 = ":bet_" . count($this->params) . "_2";
                 $this->params[$p1] = $value[0];
                 $this->params[$p2] = $value[1];
-                return "{$column} BETWEEN {$p1} AND {$p2}";
+                return "{$column} {$op} {$p1} AND {$p2}";
             }
 
-            $paramName = ":p_" . count($this->params) . "_" . str_replace('.', '_', $column);
+            // NULL handling: [column, '=', null] → IS NULL, [column, '!=', null] → IS NOT NULL
+            if ($value === null) {
+                if ($op === '=' || $op === 'IS') return "{$column} IS NULL";
+                if ($op === '!=' || $op === '<>' || $op === 'IS NOT') return "{$column} IS NOT NULL";
+            }
+
+            // Standard comparison: =, !=, >, <, >=, <=
+            $paramName = ":p_" . count($this->params) . "_" . str_replace('.', '_', (string)$column);
             $this->params[$paramName] = $value;
             return "{$column} {$op} {$paramName}";
         }

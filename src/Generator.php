@@ -730,7 +730,7 @@ PHP;
             $displayCol = $this->getDisplayColumn($relatedTable);
 
             // Add related name to search fields using Alias
-            $searchFields[] = "['LIKE', '{$alias}.{$displayCol}', \$keyword]";
+            $searchFields[] = "['{$alias}.{$displayCol}', 'LIKE', \$keyword]";
         }
 
         // 2. Analyze Inverse Relationships (hasMany / hasOne)
@@ -758,7 +758,7 @@ PHP;
         foreach ($fillable as $column) {
             foreach ($textColumnKeywords as $keyword) {
                 if (stripos($column, $keyword) !== false) {
-                    $searchFields[] = "['LIKE', '{$tableName}.{$column}', \$keyword]";
+                    $searchFields[] = "['{$tableName}.{$column}', 'LIKE', \$keyword]";
                     break;
                 }
             }
@@ -766,7 +766,7 @@ PHP;
 
         // Fallback if no search fields found
         if (empty($searchFields) && !empty($fillable)) {
-            $searchFields[] = "['LIKE', '{$tableName}.id', \$keyword]";
+            $searchFields[] = "['{$tableName}.id', 'LIKE', \$keyword]";
         }
 
         // Format Join calls and Search fields for template
