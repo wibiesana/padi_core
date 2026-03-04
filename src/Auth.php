@@ -11,16 +11,42 @@ use Exception;
 /**
  * Authentication Helper - JWT Token Management
  * 
- * Worker-mode safe: secret is cached in static after first init.
- * Security: validates JWT secret strength, checks for weak defaults.
+ * Worker-mode safe: secret & key cached in static after first init.
+ *                   Per-request state cleared via reset().
+ * Shared hosting safe: multiple Authorization header fallbacks
+ *                      (HTTP_AUTHORIZATION, REDIRECT_HTTP_AUTHORIZATION, getallheaders).
+ * Performance: per-request decoded token cache avoids double JWT decode.
  */
 class Auth
 {
+    /** @var string|null JWT secret (loaded once, persists across worker requests) */
     private static ?string $secret = null;
     private static ?string $algorithm = null;
-    /** @var Key|null Cached key object to avoid re-creation per verification */
+    /** @var Key|null Cached Key object (reused across all verify calls) */
     private static ?Key $key = null;
 
+    /** @var object|false|null Per-request decoded token cache (null=not cached, false=invalid, object=valid) */
+    private static object|false|null $decodedCache = null;
+    /** @var string|null Per-request raw token cache */
+    private static ?string $tokenCache = null;
+    /** @var bool Whether token was already extracted this request */
+    private static bool $tokenExtracted = false;
+
+    /** @var array Weak/default secrets to reject (checked once at init) */
+    private const WEAK_SECRETS = [
+        'your-secret-key',
+        'change-this',
+        'secret',
+        'your-secret-key-change-this',
+        'jwt-secret',
+        'supersecret',
+        '12345678901234567890123456789012',
+    ];
+
+    /**
+     * One-time initialization: load config, validate secret, cache Key object.
+     * Safe for worker mode — runs once and statics persist.
+     */
     private static function init(): void
     {
         if (self::$secret !== null) {
@@ -35,38 +61,32 @@ class Auth
         }
 
         $config = require $configPath;
-        self::$secret = $config['jwt_secret'];
-        self::$algorithm = $config['jwt_algorithm'] ?? 'HS256';
+        $secret = $config['jwt_secret'];
+        $algorithm = $config['jwt_algorithm'] ?? 'HS256';
 
         // Validate JWT secret strength
-        if (strlen(self::$secret) < 32) {
+        if (strlen($secret) < 32) {
             throw new Exception(
-                "JWT secret must be at least 32 characters long. Current length: " . strlen(self::$secret)
+                "JWT secret must be at least 32 characters long. Current length: " . strlen($secret)
             );
         }
 
-        // Check for common default/weak secrets
-        $weakSecrets = [
-            'your-secret-key',
-            'change-this',
-            'secret',
-            'your-secret-key-change-this',
-            'jwt-secret',
-            'supersecret',
-            '12345678901234567890123456789012'
-        ];
-
-        $lowerSecret = strtolower(self::$secret);
-        foreach ($weakSecrets as $weakSecret) {
-            if (str_contains($lowerSecret, $weakSecret)) {
+        // Reject common default/weak secrets
+        $lowerSecret = strtolower($secret);
+        foreach (self::WEAK_SECRETS as $weak) {
+            if (str_contains($lowerSecret, $weak)) {
                 throw new Exception(
                     "JWT secret appears to be using a default or weak value. Please use a cryptographically secure random string."
                 );
             }
         }
 
-        // Pre-create Key object (reused across all verify calls)
-        self::$key = new Key(self::$secret, self::$algorithm);
+        self::$secret = $secret;
+        self::$algorithm = $algorithm;
+        self::$key = new Key($secret, $algorithm);
+
+        // Set leeway once (JWT library static — no need to set per-call)
+        JWT::$leeway = 60;
     }
 
     /**
@@ -83,7 +103,7 @@ class Auth
         $now = time();
         $payload['iat'] = $now;
         $payload['exp'] = $now + $expiry;
-        $payload['nbf'] = $now; // Not before: prevent use before issuance
+        $payload['nbf'] = $now;
 
         return JWT::encode($payload, self::$secret, self::$algorithm);
     }
@@ -91,25 +111,37 @@ class Auth
     /**
      * Decode and verify JWT token
      * 
+     * Caches result per-request so multiple calls (userId + user) don't re-decode.
+     * 
      * @return object|null Decoded payload or null on failure
      */
     public static function verifyToken(string $token): ?object
     {
         self::init();
 
-        // Quick sanity check before expensive decode
+        // Return cached result if same token was already decoded this request
+        if (self::$decodedCache !== null && self::$tokenCache === $token) {
+            return self::$decodedCache === false ? null : self::$decodedCache;
+        }
+
+        // Quick structural check before expensive decode
         if ($token === '' || substr_count($token, '.') !== 2) {
+            self::$tokenCache = $token;
+            self::$decodedCache = false;
             return null;
         }
 
         try {
-            // Set leeway to 60 seconds to account for clock skew
-            JWT::$leeway = 60;
-            return JWT::decode($token, self::$key);
+            $decoded = JWT::decode($token, self::$key);
+            self::$tokenCache = $token;
+            self::$decodedCache = $decoded;
+            return $decoded;
         } catch (Exception $e) {
             if (Env::get('APP_DEBUG') === 'true') {
                 error_log("[Auth] JWT verification failed: " . $e->getMessage());
             }
+            self::$tokenCache = $token;
+            self::$decodedCache = false;
             return null;
         }
     }
@@ -117,15 +149,13 @@ class Auth
     /**
      * Get current authenticated user ID from request bearer token
      * 
+     * Delegates to user() — zero-cost thanks to per-request cache.
+     * 
      * @param Request|null $request Existing request instance (avoids re-parsing)
      */
     public static function userId(?Request $request = null): ?int
     {
-        $token = self::extractToken($request);
-        if ($token === null) return null;
-
-        $decoded = self::verifyToken($token);
-        return $decoded?->user_id ?? null;
+        return self::user($request)?->user_id ?? null;
     }
 
     /**
@@ -144,22 +174,66 @@ class Auth
     /**
      * Extract bearer token from request
      * 
-     * Uses provided Request instance or creates a new one.
-     * Avoids creating a new Request() which re-reads php://input.
+     * Supports multiple header sources for shared hosting compatibility:
+     * 1. Request instance bearerToken() (if provided)
+     * 2. $_SERVER['HTTP_AUTHORIZATION'] (standard CGI/FastCGI)
+     * 3. $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] (Apache mod_rewrite)
+     * 4. getallheaders() fallback (Apache mod_php / some shared hosting)
+     * 
+     * Result is cached per-request to avoid repeated header lookups.
      */
     private static function extractToken(?Request $request = null): ?string
     {
-        // Prefer using existing request to avoid re-reading php://input
+        // Return cached extraction result within same request
+        if (self::$tokenExtracted) {
+            return self::$tokenCache;
+        }
+
+        $token = null;
+
+        // 1. Prefer using existing Request instance (avoids re-reading php://input)
         if ($request !== null) {
-            return $request->bearerToken();
+            $token = $request->bearerToken();
+            if ($token !== null) {
+                self::$tokenExtracted = true;
+                self::$tokenCache = $token;
+                return $token;
+            }
         }
 
-        // Fallback: read directly from $_SERVER to avoid creating a full Request
-        $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
-        if (str_starts_with($header, 'Bearer ')) {
-            return substr($header, 7);
+        // 2. Try standard server variables
+        $header = $_SERVER['HTTP_AUTHORIZATION']
+            ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+            ?? '';
+
+        // 3. Shared hosting fallback: some Apache configs strip HTTP_AUTHORIZATION
+        if ($header === '' && function_exists('getallheaders')) {
+            $headers = getallheaders();
+            if ($headers !== false) {
+                // getallheaders() key casing varies across environments
+                $header = $headers['Authorization'] ?? $headers['authorization'] ?? '';
+            }
         }
 
-        return null;
+        if ($header !== '' && str_starts_with($header, 'Bearer ')) {
+            $token = substr($header, 7);
+        }
+
+        self::$tokenExtracted = true;
+        self::$tokenCache = $token;
+        return $token;
+    }
+
+    /**
+     * Reset per-request state (called between worker requests)
+     * 
+     * Prevents decoded token and user data from leaking between requests.
+     * Must be called from Application::cleanupRequest() in the worker loop.
+     */
+    public static function reset(): void
+    {
+        self::$decodedCache = null;
+        self::$tokenCache = null;
+        self::$tokenExtracted = false;
     }
 }

@@ -296,6 +296,9 @@ class Application
         $_FILES = [];
         $_COOKIE = [];
 
+        // Reset per-request auth cache (token, decoded user)
+        Auth::reset();
+
         // Reset database singleton to prevent stale PDO references
         Database::resetInstance();
     }
