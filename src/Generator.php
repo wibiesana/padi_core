@@ -752,26 +752,15 @@ PHP;
             $relationsStr .= "    }\n";
         }
 
-        // 2. Analyze Local Text Columns for Search
-        $textColumnKeywords = ['name', 'title', 'description', 'content', 'email', 'username', 'category', 'type', 'status', 'code', 'sku', 'nis', 'nisn'];
-
-        foreach ($fillable as $column) {
-            foreach ($textColumnKeywords as $keyword) {
-                if (stripos($column, $keyword) !== false) {
-                    $searchFields[] = "['{$tableName}.{$column}', 'LIKE', \$keyword]";
-                    break;
-                }
-            }
+        // 2. Global Search - Relation search fields only (fillable fields are dynamic at runtime)
+        $relationSearchFieldsStr = "";
+        if (!empty($searchFields)) {
+            $relationSearchLines = implode("\n            ", array_map(fn($f) => "\$conditions[] = {$f};", $searchFields));
+            $relationSearchFieldsStr = "\n            // Search in related tables\n            {$relationSearchLines}";
         }
 
-        // Fallback if no search fields found
-        if (empty($searchFields) && !empty($fillable)) {
-            $searchFields[] = "['{$tableName}.id', 'LIKE', \$keyword]";
-        }
-
-        // Format Join calls and Search fields for template
+        // Format Join calls for template
         $joinCallsStr = !empty($joinCalls) ? implode("\n            ", $joinCalls) : "";
-        $searchFieldsStr = implode(",\n                ", $searchFields);
 
         // searchPaginate method
         $pkStr = is_array($primaryKey) ? "['" . implode("', '", $primaryKey) . "']" : "'$primaryKey'";
@@ -798,18 +787,35 @@ class {$modelName} extends ActiveRecord
 {$auditConfig}
 {$relationsStr}
     /**
+     * Build global search conditions
+     * Searches all fillable fields + related table display columns
+     */
+    protected function buildSearchConditions(string \$keyword): array
+    {
+        \$conditions = ['OR'];
+
+        // Search all fillable fields from this table
+        foreach (\$this->fillable as \$field) {
+            \$conditions[] = ["{\$this->table}.{\$field}", 'LIKE', \$keyword];
+        }
+{$relationSearchFieldsStr}
+
+        return \$conditions;
+    }
+
+    /**
      * Search with pagination and joins
      */
     public function searchPaginate(string \$keyword, int \$page = 1, int \$perPage = 25, ?string \$orderBy = null): array
     {
         \$keyword = "%{\$keyword}%";
+        \$conditions = \$this->buildSearchConditions(\$keyword);
+
         \$query = Query::find()
             ->select("{\$this->table}.*")
             ->from(\$this->table)
             {$joinCallsStr}
-            ->where(['OR',
-                {$searchFieldsStr}
-            ]);
+            ->where(\$conditions);
 
         if (\$orderBy) {
             \$query->orderBy(\$orderBy);
@@ -843,13 +849,13 @@ class {$modelName} extends ActiveRecord
     public function search(string \$keyword, ?string \$orderBy = null): array
     {
         \$keyword = "%{\$keyword}%";
+        \$conditions = \$this->buildSearchConditions(\$keyword);
+
         \$query = Query::find()
             ->select("{\$this->table}.*")
             ->from(\$this->table)
             {$joinCallsStr}
-            ->where(['OR',
-                {$searchFieldsStr}
-            ])
+            ->where(\$conditions)
             ->limit(100);
 
         if (\$orderBy) {
