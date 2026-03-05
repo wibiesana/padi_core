@@ -312,13 +312,17 @@ class Application
             $maxRequests = (int)Env::get('MAX_REQUESTS', '500');
             $count = 0;
 
-            for (; frankenphp_handle_request(); ++$count) {
+            while (frankenphp_handle_request(function (): void {
                 try {
                     $this->handleRequest();
+                } catch (\Throwable $e) {
+                    $this->handleException($e);
                 } finally {
                     // Always clean up, even if an exception occurred
                     $this->cleanupRequest();
                 }
+            })) {
+                ++$count;
 
                 if ($count >= $maxRequests) {
                     // Graceful worker restart to prevent memory buildup
