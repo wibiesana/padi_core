@@ -82,6 +82,7 @@ class Cache
 
         $host = Env::get('REDIS_HOST', '127.0.0.1');
         $port = (int) Env::get('REDIS_PORT', '6379');
+        $username = Env::get('REDIS_USERNAME', '');
         $password = Env::get('REDIS_PASSWORD', '');
         $database = (int) Env::get('REDIS_DATABASE', '0');
         $prefix = Env::get('REDIS_PREFIX', 'padi:');
@@ -94,7 +95,12 @@ class Cache
             'read_write_timeout' => 2,
         ];
 
-        if ($password !== '') {
+        // Redis 6+ ACL: AUTH username password
+        if ($username !== '' && $password !== '') {
+            $config['username'] = $username;
+            $config['password'] = $password;
+        } elseif ($password !== '') {
+            // Classic AUTH (password only, Redis < 6 or default user)
             $config['password'] = $password;
         }
 
