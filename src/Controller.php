@@ -6,34 +6,45 @@ namespace Wibiesana\Padi\Core;
 
 /**
  * Base Controller
- * 
- * Provides common helper methods for all controllers:
- * - Input validation
- * - Response formatting
- * - Role-based authorization
- * - Status code management
+ *
+ * Worker-mode safe: no static state, fresh instance per request.
+ * Shared-hosting safe: no external dependencies.
+ *
+ * DRY principles:
+ * - Centralized authorization via assertUser() guard
+ * - Single-path error response via error()
+ * - Debug flag cached per-instance to avoid repeated Env lookups
  */
 abstract class Controller
 {
     protected Request $request;
     protected Response $response;
 
+    /** Cached debug flag — avoids repeated Env::get() per request */
+    private readonly bool $isDebug;
+
     public function __construct(?Request $request = null)
     {
         $this->request = $request ?? new Request();
         $this->response = new Response();
+        $this->isDebug = Env::get('APP_DEBUG', 'false') === 'true';
     }
+
+    // ──────────────────────────────────────────────
+    //  INPUT & VALIDATION
+    // ──────────────────────────────────────────────
 
     /**
      * Validate request data against rules
-     * 
+     *
+     * @return array Validated data (only keys present in rules)
      * @throws ValidationException if validation fails
-     * @throws \Exception if rules are empty
+     * @throws \InvalidArgumentException if rules are empty
      */
     protected function validate(array $rules, array $messages = []): array
     {
         if (empty($rules)) {
-            throw new \Exception('Validation rules not configured. Please contact administrator.', 500);
+            throw new \InvalidArgumentException('Validation rules cannot be empty.');
         }
 
         $validator = new Validator($this->request->all(), $rules, $messages);
@@ -45,8 +56,12 @@ abstract class Controller
         return $validator->validated();
     }
 
+    // ──────────────────────────────────────────────
+    //  RESPONSE HELPERS (DRY)
+    // ──────────────────────────────────────────────
+
     /**
-     * Return JSON response directly
+     * Return JSON response directly (terminates request)
      */
     protected function json(array $data, int $code = 200): void
     {
@@ -54,38 +69,72 @@ abstract class Controller
     }
 
     /**
-     * Return database error response with detailed debug info
+     * Return a standardised error response
+     *
+     * Single path for ALL error types: database, auth, business logic.
+     * Debug info is only appended when APP_DEBUG=true.
      */
-    protected function databaseError(string $message = 'Database error occurred', ?\Exception $exception = null): void
-    {
+    protected function error(
+        string $message,
+        int $code = 500,
+        string $messageCode = 'ERROR',
+        ?\Throwable $exception = null
+    ): void {
         if ($exception) {
             Database::logQueryError($exception);
         }
 
         $response = [
-            'success' => false,
-            'message' => $message,
-            'message_code' => 'DATABASE_ERROR'
+            'success'      => false,
+            'message'      => $message,
+            'message_code' => $messageCode,
         ];
 
-        // Add database error details in debug mode only
-        if (Env::get('APP_DEBUG', 'false') === 'true') {
-            $lastError = DatabaseManager::getLastError();
-            if ($lastError) {
-                $response['database_error'] = $lastError;
-            }
+        if ($this->isDebug && $exception) {
+            $response['debug'] = [
+                'exception' => $exception->getMessage(),
+                'code'      => $exception->getCode(),
+                'file'      => $exception->getFile(),
+                'line'      => $exception->getLine(),
+            ];
 
-            if ($exception) {
-                $response['exception'] = [
-                    'message' => $exception->getMessage(),
-                    'code' => $exception->getCode(),
-                    'file' => $exception->getFile(),
-                    'line' => $exception->getLine()
-                ];
+            $lastDbError = DatabaseManager::getLastError();
+            if ($lastDbError !== null) {
+                $response['debug']['database_error'] = $lastDbError;
             }
         }
 
-        $this->response->json($response, 500);
+        $this->response->json($response, $code);
+    }
+
+    /**
+     * Convenience: database-specific error
+     */
+    protected function databaseError(string $message = 'Database error occurred', ?\Throwable $exception = null): void
+    {
+        $this->error($message, 500, 'DATABASE_ERROR', $exception);
+    }
+
+    // ──────────────────────────────────────────────
+    //  AUTHORIZATION (DRY – single user assertion)
+    // ──────────────────────────────────────────────
+
+    /**
+     * Assert the authenticated user is present
+     *
+     * Every role / ownership check needs a user object.
+     * Centralising this avoids null-check duplication.
+     *
+     * @return object The authenticated user
+     * @throws \Exception 401 if no user is attached to request
+     */
+    private function assertUser(): object
+    {
+        if ($this->request->user === null) {
+            throw new \Exception('Authentication required', 401);
+        }
+
+        return $this->request->user;
     }
 
     /**
@@ -105,13 +154,15 @@ abstract class Controller
     }
 
     /**
-     * Require specific role or throw forbidden error
+     * Require specific role or throw forbidden
      *
-     * @throws \Exception with 403 code if role doesn't match
+     * @throws \Exception 401 if not authenticated, 403 if wrong role
      */
     protected function requireRole(string $role, ?string $message = null): void
     {
-        if (!$this->hasRole($role)) {
+        $user = $this->assertUser();
+
+        if ($user->role !== $role) {
             throw new \Exception($message ?? "Only {$role}s can access this resource", 403);
         }
     }
@@ -119,11 +170,13 @@ abstract class Controller
     /**
      * Require any of the specified roles
      *
-     * @throws \Exception with 403 code if no role matches
+     * @throws \Exception 401 if not authenticated, 403 if no role matches
      */
     protected function requireAnyRole(array $roles, ?string $message = null): void
     {
-        if (!$this->hasAnyRole($roles)) {
+        $user = $this->assertUser();
+
+        if (!in_array($user->role, $roles, true)) {
             $roleList = implode(', ', $roles);
             throw new \Exception($message ?? "Only {$roleList} can access this resource", 403);
         }
@@ -131,10 +184,13 @@ abstract class Controller
 
     /**
      * Check if current user is the owner of the resource
+     *
+     * Strict integer comparison prevents type-juggling bypass.
      */
     protected function isOwner(int $resourceUserId): bool
     {
-        return $this->request->user !== null && (int)$this->request->user->user_id === $resourceUserId;
+        return $this->request->user !== null
+            && (int) $this->request->user->user_id === $resourceUserId;
     }
 
     /**
@@ -148,14 +204,20 @@ abstract class Controller
     /**
      * Require admin role or resource ownership
      *
-     * @throws \Exception with 403 code if neither admin nor owner
+     * @throws \Exception 401 if not authenticated, 403 if neither admin nor owner
      */
     protected function requireAdminOrOwner(int $resourceUserId, ?string $message = null): void
     {
-        if (!$this->isAdmin() && !$this->isOwner($resourceUserId)) {
+        $user = $this->assertUser();
+
+        if ($user->role !== 'admin' && (int) $user->user_id !== $resourceUserId) {
             throw new \Exception($message ?? 'You can only access your own resources', 403);
         }
     }
+
+    // ──────────────────────────────────────────────
+    //  RESPONSE SHORTHAND (Auto-formatted by Router)
+    // ──────────────────────────────────────────────
 
     /**
      * Set response status code for auto-formatting
@@ -182,8 +244,8 @@ abstract class Controller
         $this->setStatusCode($statusCode);
         return [
             'status' => $status,
-            'code' => $code ?? Router::getStatusCodeName($statusCode),
-            'item' => $data
+            'code'   => $code ?? Router::getStatusCodeName($statusCode),
+            'item'   => $data,
         ];
     }
 
