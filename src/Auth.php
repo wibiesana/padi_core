@@ -155,7 +155,8 @@ class Auth
      */
     public static function userId(?Request $request = null): ?int
     {
-        return self::user($request)?->user_id ?? null;
+        $id = self::user($request)?->user_id ?? null;
+        return $id !== null ? (int)$id : null;
     }
 
     /**
