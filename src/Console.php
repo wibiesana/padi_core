@@ -269,4 +269,245 @@ PHP;
             echo "\e[31mError: Setup wizard not found at {$initScript}\e[0m\n";
         }
     }
+
+    // =========================================================================
+    // Interactive Menu (Arrow Key Navigation)
+    // =========================================================================
+
+    /**
+     * Display an interactive menu with arrow-key navigation.
+     *
+     * @param string $title   The menu title/question
+     * @param array  $options Associative array [key => label]
+     * @param int|string $default Default selected key
+     * @return int|string The selected key
+     */
+    public static function interactiveChoice(string $title, array $options, int|string $default = 1): int|string
+    {
+        $keys = array_keys($options);
+        $selectedIndex = array_search($default, $keys, false);
+        if ($selectedIndex === false) {
+            $selectedIndex = 0;
+        }
+        $count = count($keys);
+
+        // Try raw mode; if unsupported fall back to number input
+        $rawEnabled = self::enableRawMode();
+        if (!$rawEnabled) {
+            return self::fallbackChoice($title, $options, $default);
+        }
+
+        // Hide cursor
+        echo "\e[?25l";
+
+        // Print title
+        echo "\n\e[36m{$title}\e[0m\n";
+        echo str_repeat('─', 60) . "\n";
+
+        // Render initial options
+        self::renderOptions($options, $keys, $selectedIndex);
+
+        echo str_repeat('─', 60) . "\n";
+        echo "\e[90m  ↑/↓ Navigate  •  Enter Select  •  q Quit\e[0m";
+
+        while (true) {
+            $key = self::readKey();
+
+            if ($key === 'UP') {
+                $selectedIndex = ($selectedIndex - 1 + $count) % $count;
+            } elseif ($key === 'DOWN') {
+                $selectedIndex = ($selectedIndex + 1) % $count;
+            } elseif ($key === 'ENTER') {
+                break;
+            } elseif ($key === 'q' || $key === 'Q' || $key === 'ESC') {
+                // Restore terminal
+                self::disableRawMode();
+                echo "\e[?25h\n";
+                echo "\e[31m  Cancelled.\e[0m\n";
+                exit(0);
+            } elseif (is_numeric($key) && isset($options[(int)$key])) {
+                // Allow direct number press to jump
+                $selectedIndex = array_search((int)$key, $keys, false);
+                break;
+            } else {
+                continue;
+            }
+
+            // Re-render: move cursor up by (count + 2) lines (options + separator + hint)
+            $linesToMoveUp = $count + 2;
+            echo "\e[{$linesToMoveUp}A\r";
+
+            self::renderOptions($options, $keys, $selectedIndex);
+
+            echo str_repeat('─', 60) . "\n";
+            echo "\e[90m  ↑/↓ Navigate  •  Enter Select  •  q Quit\e[0m";
+        }
+
+        // Restore terminal
+        self::disableRawMode();
+        echo "\e[?25h\n\n";
+
+        $selectedKey = $keys[$selectedIndex];
+        echo "\e[32m  ✓ Selected:\e[0m {$options[$selectedKey]}\n";
+
+        return $selectedKey;
+    }
+
+    /**
+     * Render the option list with the selected item highlighted.
+     */
+    private static function renderOptions(array $options, array $keys, int $selectedIndex): void
+    {
+        foreach ($keys as $i => $key) {
+            $label = $options[$key];
+            if ($i === $selectedIndex) {
+                // Highlighted: cyan background, bold white text
+                echo "  \e[46m\e[1;37m → {$key}. {$label} \e[0m\n";
+            } else {
+                echo "    \e[90m{$key}.\e[0m {$label}\n";
+            }
+        }
+    }
+
+    /**
+     * Fallback: classic number-input when raw mode is unavailable.
+     */
+    private static function fallbackChoice(string $title, array $options, int|string $default): int|string
+    {
+        echo "\n\e[36m{$title}\e[0m\n";
+        echo str_repeat('─', 60) . "\n";
+
+        foreach ($options as $key => $label) {
+            $marker = ($key == $default) ? '→' : ' ';
+            echo "  {$marker} {$key}. {$label}\n";
+        }
+
+        echo str_repeat('─', 60) . "\n";
+        echo "\e[36mEnter your choice\e[0m";
+        if ($default !== '') {
+            echo " \e[33m[{$default}]\e[0m";
+        }
+        echo ": ";
+
+        $input = trim(fgets(STDIN));
+        $input = $input === '' ? $default : $input;
+
+        if (is_numeric($input)) {
+            $input = (int) $input;
+        }
+
+        if (!isset($options[$input])) {
+            echo "\e[33m  ⚠ Invalid choice. Using default: {$default}\e[0m\n";
+            return $default;
+        }
+
+        return $input;
+    }
+
+    // =========================================================================
+    // Terminal Raw-Mode Helpers (Cross-Platform)
+    // =========================================================================
+
+    private static ?string $sttyState = null;
+
+    private static function isWindows(): bool
+    {
+        return PHP_OS_FAMILY === 'Windows';
+    }
+
+    /**
+     * Enable raw (non-canonical, no-echo) terminal mode.
+     * Returns true if succeeded.
+     */
+    private static function enableRawMode(): bool
+    {
+        if (self::isWindows()) {
+            // Windows: no stty, we'll handle via PowerShell ReadKey
+            return true;
+        }
+
+        // Unix/Mac: save and set stty
+        $saved = shell_exec('stty -g 2>/dev/null');
+        if ($saved === null) {
+            return false;
+        }
+        self::$sttyState = trim($saved);
+        shell_exec('stty -icanon -echo 2>/dev/null');
+        return true;
+    }
+
+    /**
+     * Restore the original terminal mode.
+     */
+    private static function disableRawMode(): void
+    {
+        if (self::isWindows()) {
+            return; // nothing to restore
+        }
+
+        if (self::$sttyState !== null) {
+            shell_exec('stty ' . self::$sttyState . ' 2>/dev/null');
+            self::$sttyState = null;
+        }
+    }
+
+    /**
+     * Read a single keypress and return a normalized key name.
+     * Returns: 'UP', 'DOWN', 'ENTER', 'ESC', or the character itself.
+     */
+    private static function readKey(): string
+    {
+        if (self::isWindows()) {
+            return self::readKeyWindows();
+        }
+        return self::readKeyUnix();
+    }
+
+    /**
+     * Windows: use PowerShell [Console]::ReadKey() to capture a single keypress.
+     */
+    private static function readKeyWindows(): string
+    {
+        // Use PowerShell to read a single key without echoing
+        $ps = 'powershell -NoProfile -Command "$k=[Console]::ReadKey($true); Write-Host $k.Key"';
+        $result = trim((string) shell_exec($ps));
+
+        return match ($result) {
+            'UpArrow'    => 'UP',
+            'DownArrow'  => 'DOWN',
+            'Enter'      => 'ENTER',
+            'Escape'     => 'ESC',
+            default      => $result,
+        };
+    }
+
+    /**
+     * Unix/Mac: read raw bytes from STDIN to detect arrow-key escape sequences.
+     */
+    private static function readKeyUnix(): string
+    {
+        $c = fread(STDIN, 1);
+
+        if ($c === "\n" || $c === "\r") {
+            return 'ENTER';
+        }
+
+        // ESC sequence
+        if ($c === "\e") {
+            $seq1 = fread(STDIN, 1);
+            if ($seq1 === '[') {
+                $seq2 = fread(STDIN, 1);
+                return match ($seq2) {
+                    'A' => 'UP',
+                    'B' => 'DOWN',
+                    'C' => 'RIGHT',
+                    'D' => 'LEFT',
+                    default => 'ESC',
+                };
+            }
+            return 'ESC';
+        }
+
+        return $c;
+    }
 }
