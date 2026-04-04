@@ -284,6 +284,9 @@ PHP;
      */
     public static function interactiveChoice(string $title, array $options, int|string $default = 1): int|string
     {
+        // Enable VT100 ANSI escape sequences on Windows
+        self::enableVT100();
+
         $keys = array_keys($options);
         $selectedIndex = array_search($default, $keys, false);
         if ($selectedIndex === false) {
@@ -292,8 +295,7 @@ PHP;
         $count = count($keys);
 
         // Try raw mode; if unsupported fall back to number input
-        $rawEnabled = self::enableRawMode();
-        if (!$rawEnabled) {
+        if (!self::enableRawMode()) {
             return self::fallbackChoice($title, $options, $default);
         }
 
@@ -320,27 +322,27 @@ PHP;
             } elseif ($key === 'ENTER') {
                 break;
             } elseif ($key === 'q' || $key === 'Q' || $key === 'ESC') {
-                // Restore terminal
                 self::disableRawMode();
                 echo "\e[?25h\n";
                 echo "\e[31m  Cancelled.\e[0m\n";
                 exit(0);
             } elseif (is_numeric($key) && isset($options[(int)$key])) {
-                // Allow direct number press to jump
                 $selectedIndex = array_search((int)$key, $keys, false);
                 break;
             } else {
                 continue;
             }
 
-            // Re-render: move cursor up by (count + 2) lines (options + separator + hint)
-            $linesToMoveUp = $count + 2;
+            // Move cursor up to first option line:
+            // Current position = end of hint line (no \n)
+            // Lines above: separator(1) + options(count) = count + 1
+            $linesToMoveUp = $count + 1;
             echo "\e[{$linesToMoveUp}A\r";
 
             self::renderOptions($options, $keys, $selectedIndex);
 
-            echo str_repeat('─', 60) . "\n";
-            echo "\e[90m  ↑/↓ Navigate  •  Enter Select  •  q Quit\e[0m";
+            echo "\e[2K" . str_repeat('─', 60) . "\n";
+            echo "\e[2K\e[90m  ↑/↓ Navigate  •  Enter Select  •  q Quit\e[0m";
         }
 
         // Restore terminal
@@ -355,13 +357,15 @@ PHP;
 
     /**
      * Render the option list with the selected item highlighted.
+     * Each line is cleared first with \e[2K to prevent residual characters.
      */
     private static function renderOptions(array $options, array $keys, int $selectedIndex): void
     {
         foreach ($keys as $i => $key) {
             $label = $options[$key];
+            // Clear entire line before writing to prevent leftover chars
+            echo "\e[2K";
             if ($i === $selectedIndex) {
-                // Highlighted: cyan background, bold white text
                 echo "  \e[46m\e[1;37m → {$key}. {$label} \e[0m\n";
             } else {
                 echo "    \e[90m{$key}.\e[0m {$label}\n";
@@ -405,10 +409,13 @@ PHP;
     }
 
     // =========================================================================
-    // Terminal Raw-Mode Helpers (Cross-Platform)
+    // Terminal Helpers (Cross-Platform)
     // =========================================================================
 
     private static ?string $sttyState = null;
+
+    /** @var \FFI|null|false Cached FFI instance. null=not tried, false=unavailable */
+    private static \FFI|null|false $ffi = null;
 
     private static function isWindows(): bool
     {
@@ -416,13 +423,25 @@ PHP;
     }
 
     /**
+     * Enable VT100/ANSI escape sequence processing on Windows.
+     * Without this, escape codes like \e[2K and \e[nA are printed literally.
+     */
+    private static function enableVT100(): void
+    {
+        if (self::isWindows() && function_exists('sapi_windows_vt100_support')) {
+            @sapi_windows_vt100_support(STDOUT, true);
+            @sapi_windows_vt100_support(STDERR, true);
+        }
+    }
+
+    /**
      * Enable raw (non-canonical, no-echo) terminal mode.
-     * Returns true if succeeded.
+     * On Windows: no-op (FFI _getch / PowerShell handle raw input natively).
+     * On Unix/Mac: sets stty to raw mode.
      */
     private static function enableRawMode(): bool
     {
         if (self::isWindows()) {
-            // Windows: no stty, we'll handle via PowerShell ReadKey
             return true;
         }
 
@@ -442,7 +461,7 @@ PHP;
     private static function disableRawMode(): void
     {
         if (self::isWindows()) {
-            return; // nothing to restore
+            return;
         }
 
         if (self::$sttyState !== null) {
@@ -463,13 +482,72 @@ PHP;
         return self::readKeyUnix();
     }
 
+    // ---- Windows Key Reading ----
+
     /**
-     * Windows: use PowerShell [Console]::ReadKey() to capture a single keypress.
+     * Windows: read a single keypress using FFI _getch() or PowerShell fallback.
+     *
+     * Strategy 1: PHP FFI with msvcrt.dll _getch() — instant, zero process spawn.
+     * Strategy 2: PowerShell [Console]::ReadKey() via shell_exec — ~200ms per key.
      */
     private static function readKeyWindows(): string
     {
-        // Use PowerShell to read a single key without echoing
-        $ps = 'powershell -NoProfile -Command "$k=[Console]::ReadKey($true); Write-Host $k.Key"';
+        // Try FFI _getch() — instant native console read
+        if (self::$ffi === null) {
+            try {
+                self::$ffi = \FFI::cdef("int _getch(void);", "msvcrt.dll");
+            } catch (\Throwable) {
+                self::$ffi = false;
+            }
+        }
+
+        if (self::$ffi !== false) {
+            return self::readKeyFFI();
+        }
+
+        // Fallback: PowerShell per-keypress
+        return self::readKeyPowerShell();
+    }
+
+    /**
+     * Read key via FFI calling msvcrt.dll _getch().
+     * Arrow keys send two bytes: 0/224 prefix + scan code.
+     */
+    private static function readKeyFFI(): string
+    {
+        $ch = self::$ffi->_getch();
+
+        // Enter
+        if ($ch === 13) {
+            return 'ENTER';
+        }
+        // ESC
+        if ($ch === 27) {
+            return 'ESC';
+        }
+
+        // Extended key (arrow keys, function keys):
+        // First byte is 0x00 or 0xE0 (224), second byte is the scan code
+        if ($ch === 0 || $ch === 224) {
+            $scanCode = self::$ffi->_getch();
+            return match ($scanCode) {
+                72 => 'UP',
+                80 => 'DOWN',
+                75 => 'LEFT',
+                77 => 'RIGHT',
+                default => '',
+            };
+        }
+
+        return chr($ch);
+    }
+
+    /**
+     * Read key via PowerShell shell_exec (fallback when FFI is unavailable).
+     */
+    private static function readKeyPowerShell(): string
+    {
+        $ps = 'powershell -NoProfile -Command "$k=[Console]::ReadKey($true); Write-Output $k.Key"';
         $result = trim((string) shell_exec($ps));
 
         return match ($result) {
@@ -477,9 +555,12 @@ PHP;
             'DownArrow'  => 'DOWN',
             'Enter'      => 'ENTER',
             'Escape'     => 'ESC',
+            'Spacebar'   => 'ENTER',
             default      => $result,
         };
     }
+
+    // ---- Unix/Mac Key Reading (stty raw mode) ----
 
     /**
      * Unix/Mac: read raw bytes from STDIN to detect arrow-key escape sequences.
@@ -492,7 +573,7 @@ PHP;
             return 'ENTER';
         }
 
-        // ESC sequence
+        // ESC sequence (arrow keys send: ESC [ A/B/C/D)
         if ($c === "\e") {
             $seq1 = fread(STDIN, 1);
             if ($seq1 === '[') {
