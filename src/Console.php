@@ -15,6 +15,34 @@ class Console
         $this->baseDir = defined('PADI_ROOT') ? PADI_ROOT : getcwd();
     }
 
+    /**
+     * Check if we are running in CLI SAPI.
+     */
+    private static function isCli(): bool
+    {
+        return PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg';
+    }
+
+    /**
+     * Check if a function is available (not disabled and exists).
+     */
+    private static function functionAvailable(string $func): bool
+    {
+        if (!function_exists($func)) {
+            return false;
+        }
+        $disabled = array_map('trim', explode(',', (string) ini_get('disable_functions')));
+        return !in_array($func, $disabled, true);
+    }
+
+    /**
+     * Check if STDIN is available for interactive input.
+     */
+    private static function stdinAvailable(): bool
+    {
+        return defined('STDIN') && is_resource(STDIN);
+    }
+
     public function run(): void
     {
         $command = $this->args[1] ?? 'list';
@@ -96,6 +124,11 @@ class Console
 
     private function serve(): void
     {
+        if (!self::functionAvailable('passthru')) {
+            echo "\e[31mError: 'passthru' function is disabled. Cannot start dev server.\e[0m\n";
+            return;
+        }
+
         $port = $this->getOption('port', '8085');
         $host = $this->getOption('host', 'localhost');
         $publicDir = $this->baseDir . '/public';
@@ -263,11 +296,18 @@ PHP;
     private function init(): void
     {
         $initScript = $this->baseDir . '/scripts/init.php';
-        if (file_exists($initScript)) {
-            passthru("php \"{$initScript}\"");
-        } else {
+        if (!file_exists($initScript)) {
             echo "\e[31mError: Setup wizard not found at {$initScript}\e[0m\n";
+            return;
         }
+
+        if (!self::functionAvailable('passthru')) {
+            echo "\e[31mError: 'passthru' function is disabled. Cannot run setup wizard.\e[0m\n";
+            echo "\e[33mRun manually: php \"{$initScript}\"\e[0m\n";
+            return;
+        }
+
+        passthru("php \"{$initScript}\"");
     }
 
     // =========================================================================
@@ -284,6 +324,11 @@ PHP;
      */
     public static function interactiveChoice(string $title, array $options, int|string $default = 1): int|string
     {
+        // Non-CLI or non-interactive environments: always use fallback
+        if (!self::isCli() || !self::stdinAvailable()) {
+            return self::fallbackChoice($title, $options, $default);
+        }
+
         // Enable VT100 ANSI escape sequences on Windows
         self::enableVT100();
 
@@ -325,7 +370,8 @@ PHP;
                 self::disableRawMode();
                 echo "\e[?25h\n";
                 echo "\e[31m  Cancelled.\e[0m\n";
-                exit(0);
+                // Return default instead of exit() — safe for FrankenPHP worker mode
+                return $default;
             } elseif (is_numeric($key) && isset($options[(int)$key])) {
                 $selectedIndex = array_search((int)$key, $keys, false);
                 break;
@@ -393,7 +439,12 @@ PHP;
         }
         echo ": ";
 
-        $input = trim(fgets(STDIN));
+        if (!self::stdinAvailable()) {
+            echo "\n\e[33m  ⚠ STDIN not available. Using default: {$default}\e[0m\n";
+            return $default;
+        }
+
+        $input = trim((string) fgets(STDIN));
         $input = $input === '' ? $default : $input;
 
         if (is_numeric($input)) {
@@ -442,10 +493,15 @@ PHP;
     private static function enableRawMode(): bool
     {
         if (self::isWindows()) {
-            return true;
+            // Windows: FFI _getch() and PowerShell handle raw input natively
+            return self::functionAvailable('shell_exec') || extension_loaded('ffi');
         }
 
-        // Unix/Mac: save and set stty
+        // Unix/Mac: requires shell_exec + stty
+        if (!self::functionAvailable('shell_exec')) {
+            return false;
+        }
+
         $saved = shell_exec('stty -g 2>/dev/null');
         if ($saved === null) {
             return false;
@@ -464,7 +520,7 @@ PHP;
             return;
         }
 
-        if (self::$sttyState !== null) {
+        if (self::$sttyState !== null && self::functionAvailable('shell_exec')) {
             shell_exec('stty ' . self::$sttyState . ' 2>/dev/null');
             self::$sttyState = null;
         }
@@ -494,15 +550,24 @@ PHP;
     {
         // Try FFI _getch() — instant native console read
         if (self::$ffi === null) {
-            try {
-                self::$ffi = \FFI::cdef("int _getch(void);", "msvcrt.dll");
-            } catch (\Throwable) {
+            if (!extension_loaded('ffi')) {
                 self::$ffi = false;
+            } else {
+                try {
+                    self::$ffi = \FFI::cdef("int _getch(void);", "msvcrt.dll");
+                } catch (\Throwable) {
+                    self::$ffi = false;
+                }
             }
         }
 
-        if (self::$ffi !== false) {
-            return self::readKeyFFI();
+        if (self::$ffi instanceof \FFI) {
+            try {
+                return self::readKeyFFI();
+            } catch (\Throwable) {
+                // If FFI call fails, disable it and fall back
+                self::$ffi = false;
+            }
         }
 
         // Fallback: PowerShell per-keypress
@@ -515,7 +580,11 @@ PHP;
      */
     private static function readKeyFFI(): string
     {
-        $ch = self::$ffi->_getch();
+        /** @var \FFI $ffi */
+        $ffi = self::$ffi;
+
+        /** @noinspection PhpUndefinedMethodInspection — _getch() is bound dynamically via FFI::cdef */
+        $ch = $ffi->_getch();
 
         // Enter
         if ($ch === 13) {
@@ -529,7 +598,8 @@ PHP;
         // Extended key (arrow keys, function keys):
         // First byte is 0x00 or 0xE0 (224), second byte is the scan code
         if ($ch === 0 || $ch === 224) {
-            $scanCode = self::$ffi->_getch();
+            /** @noinspection PhpUndefinedMethodInspection */
+            $scanCode = $ffi->_getch();
             return match ($scanCode) {
                 72 => 'UP',
                 80 => 'DOWN',
@@ -547,6 +617,11 @@ PHP;
      */
     private static function readKeyPowerShell(): string
     {
+        if (!self::functionAvailable('shell_exec')) {
+            // Cannot read keys without shell_exec — return ENTER to avoid infinite loop
+            return 'ENTER';
+        }
+
         $ps = 'powershell -NoProfile -Command "$k=[Console]::ReadKey($true); Write-Output $k.Key"';
         $result = trim((string) shell_exec($ps));
 
