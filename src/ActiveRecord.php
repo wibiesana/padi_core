@@ -482,7 +482,13 @@ abstract class ActiveRecord
                 $conditions[$firstKey] = $id;
             }
         } else {
-            $conditions[$this->primaryKey] = is_array($id) ? ($id[$this->primaryKey] ?? null) : $id;
+            /** @var string $pkName */
+            $pkName = $this->primaryKey;
+            if (is_array($id)) {
+                $conditions[$pkName] = $id[$pkName] ?? null;
+            } else {
+                $conditions[$pkName] = $id; // int|string — safe scalar PK value
+            }
         }
         return $conditions;
     }
