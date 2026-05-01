@@ -360,8 +360,8 @@ abstract class ActiveRecord
         // Validate column names to prevent SQL injection
         $sanitizedCols = array_map(function ($col) {
             if ($col === '*') return $col;
-            // Only allow valid column names (alphanumeric and underscore)
-            if (!preg_match('/^[a-zA-Z0-9_-]+$/', $col)) {
+            // Only allow valid column names (alphanumeric, underscore, and dots for table prefixes)
+            if (!preg_match('/^[a-zA-Z0-9_.]+$/', $col)) {
                 throw new \InvalidArgumentException("Invalid column name: {$col}");
             }
             return $col;
@@ -501,7 +501,7 @@ abstract class ActiveRecord
         // Validate column names to prevent SQL injection
         $sanitizedCols = array_map(function ($col) {
             if ($col === '*') return $col;
-            if (!preg_match('/^[a-zA-Z0-9_]+$/', $col)) {
+            if (!preg_match('/^[a-zA-Z0-9_.]+$/', $col)) {
                 throw new \InvalidArgumentException("Invalid column name: {$col}");
             }
             return $col;
@@ -512,8 +512,8 @@ abstract class ActiveRecord
         $params = [];
 
         foreach ($conditions as $key => $value) {
-            // Validate condition keys as well
-            if (!preg_match('/^[a-zA-Z0-9_]+$/', $key)) {
+            // Validate condition keys (allow dots for table prefixes)
+            if (!preg_match('/^[a-zA-Z0-9_.]+$/', $key)) {
                 throw new \InvalidArgumentException("Invalid condition key: {$key}");
             }
             $where[] = "{$key} = :{$key}";
@@ -731,7 +731,7 @@ abstract class ActiveRecord
         // Prepare WHERE clause
         $where = [];
         foreach ($conditions as $key => $value) {
-            if (!preg_match('/^[a-zA-Z0-9_]+$/', $key)) {
+            if (!preg_match('/^[a-zA-Z0-9_.]+$/', $key)) {
                 throw new \InvalidArgumentException("Invalid condition key: {$key}");
             }
             $where[] = "{$key} = :where_{$key}";
@@ -900,7 +900,7 @@ abstract class ActiveRecord
             if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*(?:\s+(?:ASC|DESC))?$/i', $segment)) {
                 throw new \InvalidArgumentException(
                     "Invalid ORDER BY segment: '{$segment}'. " .
-                    "Only column names and ASC/DESC direction are allowed."
+                        "Only column names and ASC/DESC direction are allowed."
                 );
             }
         }
@@ -1069,7 +1069,7 @@ abstract class ActiveRecord
         $params = [];
 
         foreach ($conditions as $key => $value) {
-            if (!preg_match('/^[a-zA-Z0-9_]+$/', $key)) {
+            if (!preg_match('/^[a-zA-Z0-9_.]+$/', $key)) {
                 throw new \InvalidArgumentException("Invalid condition key: {$key}");
             }
             $where[] = "{$key} = :{$key}";

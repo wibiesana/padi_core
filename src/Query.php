@@ -967,7 +967,7 @@ class Query
         if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $identifier)) {
             throw new \InvalidArgumentException(
                 "Invalid SQL identifier: '{$identifier}'. " .
-                "Only column names in the form 'column' or 'table.column' are allowed."
+                    "Only column names in the form 'column' or 'table.column' are allowed."
             );
         }
         return $identifier;
@@ -984,10 +984,23 @@ class Query
     private function sanitizeOrderBySegment(string $segment): string
     {
         $segment = trim($segment);
+
+        // Support multiple columns in a single string segment
+        if (str_contains($segment, ',')) {
+            $parts = array_map('trim', explode(',', $segment));
+            $sanitized = [];
+            foreach ($parts as $part) {
+                if ($part !== '') {
+                    $sanitized[] = $this->sanitizeOrderBySegment($part);
+                }
+            }
+            return implode(', ', $sanitized);
+        }
+
         if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*(?:\s+(?:ASC|DESC))?$/i', $segment)) {
             throw new \InvalidArgumentException(
                 "Invalid ORDER BY segment: '{$segment}'. " .
-                "Only column names with optional ASC/DESC direction are allowed."
+                    "Only column names with optional ASC/DESC direction are allowed."
             );
         }
         return $segment;
