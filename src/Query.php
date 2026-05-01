@@ -22,7 +22,7 @@ use PDO;
  */
 class Query
 {
-    public const VERSION = '2.0.4';
+    public const VERSION = '2.0.9';
 
     protected ?PDO $db = null;
     protected ?string $connectionName = null;
@@ -417,7 +417,8 @@ class Query
         $oldLimit = $this->limit;
         $oldOffset = $this->offset;
 
-        $this->select = ["COUNT({$q})"];
+        $safeQ = ($q === '*') ? '*' : $this->sanitizeIdentifier($q);
+        $this->select = ["COUNT({$safeQ})"];
         $this->orderBy = [];
         $this->limit = null;
         $this->offset = null;
@@ -460,7 +461,7 @@ class Query
     public function sum(string $q): mixed
     {
         $oldSelect = $this->select;
-        $this->select = ["SUM({$q})"];
+        $this->select = ['SUM(' . $this->sanitizeIdentifier($q) . ')'];
         $result = $this->scalar();
         $this->select = $oldSelect;
         return $result;
@@ -472,7 +473,7 @@ class Query
     public function average(string $q): mixed
     {
         $oldSelect = $this->select;
-        $this->select = ["AVG({$q})"];
+        $this->select = ['AVG(' . $this->sanitizeIdentifier($q) . ')'];
         $result = $this->scalar();
         $this->select = $oldSelect;
         return $result;
@@ -490,7 +491,7 @@ class Query
     public function min(string $q): mixed
     {
         $oldSelect = $this->select;
-        $this->select = ["MIN({$q})"];
+        $this->select = ['MIN(' . $this->sanitizeIdentifier($q) . ')'];
         $result = $this->scalar();
         $this->select = $oldSelect;
         return $result;
@@ -502,7 +503,7 @@ class Query
     public function max(string $q): mixed
     {
         $oldSelect = $this->select;
-        $this->select = ["MAX({$q})"];
+        $this->select = ['MAX(' . $this->sanitizeIdentifier($q) . ')'];
         $result = $this->scalar();
         $this->select = $oldSelect;
         return $result;
@@ -680,7 +681,11 @@ class Query
 
         // GROUP BY
         if (!empty($this->groupBy)) {
-            $sql .= ' GROUP BY ' . implode(', ', $this->groupBy);
+            $safeGroups = array_map(
+                fn(string $col) => $this->sanitizeIdentifier($col),
+                $this->groupBy
+            );
+            $sql .= ' GROUP BY ' . implode(', ', $safeGroups);
         }
 
         // HAVING
@@ -693,12 +698,15 @@ class Query
             $orders = [];
             foreach ($this->orderBy as $column => $direction) {
                 if (is_int($column)) {
-                    $orders[] = $direction;
+                    // Plain string segment (e.g. "col DESC") — validate as a full segment
+                    $orders[] = $this->sanitizeOrderBySegment((string)$direction);
                 } else {
                     if (is_int($direction)) {
                         $direction = $direction === SORT_DESC ? 'DESC' : 'ASC';
                     }
-                    $orders[] = "{$column} {$direction}";
+                    $safeCol = $this->sanitizeIdentifier((string)$column);
+                    $safeDir = strtoupper((string)$direction) === 'DESC' ? 'DESC' : 'ASC';
+                    $orders[] = "{$safeCol} {$safeDir}";
                 }
             }
             $sql .= ' ORDER BY ' . implode(', ', $orders);
@@ -943,5 +951,45 @@ class Query
     public static function find(?string $connection = null): self
     {
         return new self($connection);
+    }
+
+    /**
+     * Validate a single SQL identifier (column name or table.column).
+     *
+     * Accepts:  column | table.column | alias_col
+     * Rejects:  anything with spaces, special chars, SQL keywords, or injections.
+     *
+     * @throws \InvalidArgumentException on invalid identifier
+     */
+    private function sanitizeIdentifier(string $identifier): string
+    {
+        $identifier = trim($identifier);
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $identifier)) {
+            throw new \InvalidArgumentException(
+                "Invalid SQL identifier: '{$identifier}'. " .
+                "Only column names in the form 'column' or 'table.column' are allowed."
+            );
+        }
+        return $identifier;
+    }
+
+    /**
+     * Validate a single ORDER BY segment.
+     *
+     * Accepts:  column | table.column | column ASC | table.column DESC
+     * Rejects:  SQL functions, subqueries, special characters.
+     *
+     * @throws \InvalidArgumentException on invalid segment
+     */
+    private function sanitizeOrderBySegment(string $segment): string
+    {
+        $segment = trim($segment);
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*(?:\s+(?:ASC|DESC))?$/i', $segment)) {
+            throw new \InvalidArgumentException(
+                "Invalid ORDER BY segment: '{$segment}'. " .
+                "Only column names with optional ASC/DESC direction are allowed."
+            );
+        }
+        return $segment;
     }
 }

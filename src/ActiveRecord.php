@@ -372,7 +372,7 @@ abstract class ActiveRecord
         $orderClause = '';
         $orderBy = $orderBy ?: $this->defaultOrder;
         if ($orderBy) {
-            $orderClause = " ORDER BY {$orderBy}";
+            $orderClause = " ORDER BY " . $this->sanitizeOrderBy($orderBy);
         } elseif (is_string($this->primaryKey)) {
             $orderClause = " ORDER BY {$this->primaryKey} DESC";
         }
@@ -821,7 +821,7 @@ abstract class ActiveRecord
         $orderClause = '';
         $orderBy = $orderBy ?: $this->defaultOrder;
         if ($orderBy) {
-            $orderClause = " ORDER BY {$orderBy}";
+            $orderClause = " ORDER BY " . $this->sanitizeOrderBy($orderBy);
         } elseif (is_string($this->primaryKey)) {
             $orderClause = " ORDER BY {$this->primaryKey} DESC";
         }
@@ -873,6 +873,33 @@ abstract class ActiveRecord
         Database::logQuery($sql, $params);
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Sanitize an ORDER BY clause to prevent SQL injection.
+     *
+     * Accepts comma-separated segments in the form:
+     *   column | table.column | column ASC | table.column DESC
+     *
+     * Rejects anything containing SQL functions, subqueries, or special characters.
+     *
+     * @throws \InvalidArgumentException on invalid ORDER BY input
+     */
+    private function sanitizeOrderBy(string $orderBy): string
+    {
+        $segments = array_map('trim', explode(',', $orderBy));
+
+        foreach ($segments as $segment) {
+            // Allow: column, table.column, alias.column with optional ASC/DESC
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*(?:\s+(?:ASC|DESC))?$/i', $segment)) {
+                throw new \InvalidArgumentException(
+                    "Invalid ORDER BY segment: '{$segment}'. " .
+                    "Only column names and ASC/DESC direction are allowed."
+                );
+            }
+        }
+
+        return implode(', ', $segments);
     }
 
     /**
