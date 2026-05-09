@@ -741,10 +741,14 @@ PHP;
             $foreignKey = $inv['column'];
 
             // Generate method name
+            $suffix = $this->snakeToCamel($foreignKey);
+            if (substr($suffix, -2) === 'Id') $suffix = substr($suffix, 0, -2);
+
             $methodName = strtolower($relatedModel);
             if ($type === 'hasMany') {
                 $methodName .= 's'; // simple pluralization
             }
+            $methodName .= 'By' . $suffix;
 
             $relationsStr .= "\n    public function {$methodName}()\n";
             $relationsStr .= "    {\n";
