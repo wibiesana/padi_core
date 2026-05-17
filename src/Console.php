@@ -580,7 +580,10 @@ PHP;
      */
     private static function readKeyFFI(): string
     {
-        /** @var \FFI $ffi */
+        /**
+         * @var \FFI $ffi
+         * @method int _getch() Dynamically bound via FFI
+         */
         $ffi = self::$ffi;
 
         /** @noinspection PhpUndefinedMethodInspection — _getch() is bound dynamically via FFI::cdef */
