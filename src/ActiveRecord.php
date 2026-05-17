@@ -489,7 +489,7 @@ abstract class ActiveRecord
     /**
      * Helper to get primary key conditions
      */
-    protected function getPkConditions(int|string|array $id): array
+    public function getPkConditions(int|string|array $id): array
     {
         $conditions = [];
         if (is_array($this->primaryKey)) {
@@ -656,49 +656,6 @@ abstract class ActiveRecord
         }
     }
 
-    /**
-     * Save a record. If primary key is present in data or provided, it updates. Otherwise it creates.
-     * 
-     * @param array $data Data to save
-     * @param int|string|array|null $id Optional ID to force update
-     * @return int|string|bool Last insert ID on create, boolean on update
-     */
-    public function save(array $data, int|string|array|null $id = null): int|string|bool
-    {
-        if ($id !== null) {
-            return $this->update($id, $data);
-        }
-
-        $isNew = true;
-        $pkId = null;
-
-        if (is_array($this->primaryKey)) {
-            $hasAllKeys = true;
-            $pkId = [];
-            foreach ($this->primaryKey as $key) {
-                if (!isset($data[$key]) || $data[$key] === '' || $data[$key] === null) {
-                    $hasAllKeys = false;
-                    break;
-                }
-                $pkId[$key] = $data[$key];
-            }
-            if ($hasAllKeys) {
-                $isNew = false;
-            }
-        } else {
-            $pkName = $this->primaryKey;
-            if (isset($data[$pkName]) && $data[$pkName] !== '' && $data[$pkName] !== null) {
-                $isNew = false;
-                $pkId = $data[$pkName];
-            }
-        }
-
-        if ($isNew) {
-            return $this->create($data);
-        }
-
-        return $this->update($pkId, $data);
-    }
 
     /**
      * Batch insert multiple records

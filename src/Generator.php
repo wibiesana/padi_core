@@ -110,7 +110,6 @@ class Generator
         $modelNamespace = $options['model_namespace'] ?? 'App\\Models';
 
         // 1. Get schema and validation rules
-        $tableName = $this->modelNameToTableName($modelName);
         $schema = $this->getTableSchema($tableName);
         $validationRules = $this->generateValidationRules($schema, $tableName);
 
@@ -163,11 +162,7 @@ class Generator
 
         foreach ($foreignKeys as $fk) {
             $column = $fk['COLUMN_NAME'];
-            $relationNameBase = $column;
-            if (substr($relationNameBase, -3) === '_id') {
-                $relationNameBase = substr($relationNameBase, 0, -3);
-            }
-            $methodName = $this->snakeToCamel($relationNameBase);
+            $methodName = $this->getRelationName($column);
             $relations[$methodName] = [
                 'column' => $column,
                 'table' => $fk['REFERENCED_TABLE_NAME']
@@ -457,15 +452,17 @@ PHP;
         return $rules;
     }
 
-    private function getTableNameFromSchema(array $schema): string
+    /**
+     * Derive a camelCase relation method name from a FK column name
+     * e.g. 'fleet_id' -> 'fleet', 'captain_id' -> 'captain'
+     */
+    private function getRelationName(string $column): string
     {
-        // Guess table name if unknown (fallback)
-        foreach ($schema as $info) {
-            // Usually there's no easy way to get table name from DESCRIBE result directly
-            // but we can pass it down if needed. For now, let's keep it placeholder or pass it.
-            return 'TABLE_NAME';
+        $base = $column;
+        if (substr($base, -3) === '_id') {
+            $base = substr($base, 0, -3);
         }
-        return 'table';
+        return $this->snakeToCamel($base);
     }
 
     /**
@@ -702,11 +699,7 @@ PHP;
             $relatedTable = $fk['REFERENCED_TABLE_NAME'];
 
             // Generate relation name
-            $relationNameBase = $column;
-            if (substr($relationNameBase, -3) === '_id') {
-                $relationNameBase = substr($relationNameBase, 0, -3);
-            }
-            $methodName = $this->snakeToCamel($relationNameBase);
+            $methodName = $this->getRelationName($column);
             $relatedModel = $this->tableNameToModelName($relatedTable);
 
             // Determine unique alias
@@ -766,9 +759,7 @@ PHP;
         // Format Join calls for template
         $joinCallsStr = !empty($joinCalls) ? implode("\n            ", $joinCalls) : "";
 
-        // searchPaginate method
         $pkStr = is_array($primaryKey) ? "['" . implode("', '", $primaryKey) . "']" : "'$primaryKey'";
-        $pkForOrder = is_array($primaryKey) ? $primaryKey[0] : $primaryKey;
 
         return <<<PHP
 <?php
@@ -776,7 +767,7 @@ PHP;
 namespace {$namespace};
 
 use Wibiesana\Padi\Core\ActiveRecord;
-use Wibiesana\Padi\Core\Query;
+use Wibiesana\Padi\Core\ModelQuery;
 
 class {$modelName} extends ActiveRecord
 {
@@ -808,74 +799,17 @@ class {$modelName} extends ActiveRecord
     }
 
     /**
-     * Search with pagination and joins
+     * Start a model-aware search query builder
      */
-    public function searchPaginate(string \$keyword, int \$page = 1, int \$perPage = 25, ?string \$orderBy = null): array
+    public static function search(string \$keyword): ModelQuery
     {
-        \$keyword = "%{\$keyword}%";
-        \$conditions = \$this->buildSearchConditions(\$keyword);
+        \$instance = new static();
+        \$conditions = \$instance->buildSearchConditions("%{\$keyword}%");
 
-        \$query = Query::find()
-            ->select("{\$this->table}.*")
-            ->from(\$this->table)
+        return static::find()
+            ->select("{\$instance->table}.*")
             {$joinCallsStr}
             ->where(\$conditions);
-
-        if (\$orderBy) {
-            \$query->orderBy(\$orderBy);
-        } else {
-            \$query->orderBy("{\$this->table}.{$pkForOrder} DESC");
-        }
-
-        \$result = \$query->paginate(\$perPage, \$page);
-
-        if (!empty(\$result['data'])) {
-            \$this->loadRelations(\$result['data']);
-            \$result['data'] = \$this->hideFields(\$result['data']);
-        }
-
-        return [
-            'data' => \$result['data'],
-            'meta' => [
-                'total' => (int)\$result['total'],
-                'per_page' => \$result['per_page'],
-                'current_page' => \$result['current_page'],
-                'last_page' => \$result['last_page'],
-                'from' => (\$result['current_page'] - 1) * \$result['per_page'] + 1,
-                'to' => min(\$result['current_page'] * \$result['per_page'], \$result['total'])
-            ]
-        ];
-    }
-
-    /**
-     * Search {$tableName} (simple limit)
-     */
-    public function search(string \$keyword, ?string \$orderBy = null): array
-    {
-        \$keyword = "%{\$keyword}%";
-        \$conditions = \$this->buildSearchConditions(\$keyword);
-
-        \$query = Query::find()
-            ->select("{\$this->table}.*")
-            ->from(\$this->table)
-            {$joinCallsStr}
-            ->where(\$conditions)
-            ->limit(100);
-
-        if (\$orderBy) {
-            \$query->orderBy(\$orderBy);
-        } else {
-            \$query->orderBy("{\$this->table}.{$pkForOrder} DESC");
-        }
-
-        \$results = \$query->all();
-
-        if (!empty(\$results)) {
-            \$this->loadRelations(\$results);
-            \$results = \$this->hideFields(\$results);
-        }
-
-        return \$results;
     }
 }
 PHP;
@@ -941,12 +875,7 @@ PHP;
 
         foreach ($foreignKeys as $fk) {
             $column = $fk['COLUMN_NAME'];
-            // Relations logic matching Model generation
-            $relationNameBase = $column;
-            if (substr($relationNameBase, -3) === '_id') {
-                $relationNameBase = substr($relationNameBase, 0, -3);
-            }
-            $relName = $this->snakeToCamel($relationNameBase);
+            $relName = $this->getRelationName($column);
             // Determine display column for the referenced table
             $displayCol = $this->getDisplayColumn($fk['REFERENCED_TABLE_NAME']);
 
@@ -954,11 +883,13 @@ PHP;
             $withRelations[] = "'{$relName}:id,{$displayCol}'";
         }
 
-        $withRelationsStr = "";
+        $withRelationsProp = "";
+        $withRelationsArray = "[]";
         if (!empty($withRelations)) {
-            $arrayContent = implode(", ", $withRelations);
-            $withRelationsStr = "\n        // Auto-generated eager loading\n        \$this->model->with([{$arrayContent}]);\n";
+            $arrayContent = implode(",\n        ", $withRelations);
+            $withRelationsArray = "[\n        {$arrayContent}\n    ]";
         }
+        $withRelationsProp = "\n    /** @var array Relations for eager loading */\n    protected array \$withRelations = {$withRelationsArray};\n";
 
         return <<<PHP
 <?php
@@ -972,7 +903,7 @@ use App\Resources\\{$modelName}Resource;
 
 class {$controllerName} extends Controller
 {
-    protected {$modelName} \$model;
+    protected {$modelName} \$model;{$withRelationsProp}
     
     public function __construct(?Request \$request = null)
     {
@@ -985,28 +916,20 @@ class {$controllerName} extends Controller
      * GET /{$resourceName}s
      */
     public function index()
-    {{$withRelationsStr}
-        \$page = max(1, (int)\$this->request->query('page', 1)); // Min page 1
-        \$perPage = min(100, max(1, (int)\$this->request->query('per-page', 25))); // Max 100 per page
+    {
+        \$page = max(1, (int)\$this->request->query('page', 1));
+        \$perPage = min(100, max(1, (int)\$this->request->query('per-page', 25)));
         \$search = \$this->request->query('search');
         
-        // Handle Sorting
         \$sortBy = \$this->request->query('sort_by');
         \$order = \$this->request->query('order', 'asc');
-        \$orderBy = null;
+        \$orderBy = \$sortBy ? (\$sortBy . ' ' . (strtolower(\$order) === 'desc' ? 'DESC' : 'ASC')) : null;
 
-        if (\$sortBy) {
-            \$direction = strtolower(\$order) === 'desc' ? 'DESC' : 'ASC';
-            \$orderBy = "{\$sortBy} {\$direction}";
-        }
-
-        if (\$search) {
-            // Limit search query length to prevent abuse
-            \$search = substr(\$search, 0, 255);
-            \$result = \$this->model->searchPaginate(\$search, \$page, \$perPage, \$orderBy);
-        } else {
-            \$result = \$this->model->paginate(\$page, \$perPage, [], \$orderBy);
-        }
+        \$query = \$search ? {$modelName}::search(substr(\$search, 0, 255)) : {$modelName}::find();
+        
+        \$result = \$query->with(\$this->withRelations)
+            ->orderBy(\$orderBy ?? 'id DESC')
+            ->paginate(\$perPage, \$page);
 
         return {$modelName}Resource::collection(\$result);
     }
@@ -1016,23 +939,21 @@ class {$controllerName} extends Controller
      * GET /{$resourceName}s/all
      */
     public function all()
-    {{$withRelationsStr}
+    {
         \$search = \$this->request->query('search');
-
-        // Handle Sorting
+        \$limit = min(5000, max(1, (int)\$this->request->query('limit', 1000)));
         \$sortBy = \$this->request->query('sort_by');
         \$order = \$this->request->query('order', 'asc');
-        \$orderBy = null;
+        \$orderBy = \$sortBy ? (\$sortBy . ' ' . (strtolower(\$order) === 'desc' ? 'DESC' : 'ASC')) : null;
 
-        if (\$sortBy) {
-            \$direction = strtolower(\$order) === 'desc' ? 'DESC' : 'ASC';
-            \$orderBy = "{\$sortBy} {\$direction}";
-        }
+        \$query = \$search ? {$modelName}::search(substr(\$search, 0, 255)) : {$modelName}::find();
+        
+        \$results = \$query->with(\$this->withRelations)
+            ->orderBy(\$orderBy ?? 'id DESC')
+            ->limit(\$limit)
+            ->all();
 
-        if (\$search) {
-             return {$modelName}Resource::collection(\$this->model->search(\$search, \$orderBy));
-        }
-        return {$modelName}Resource::collection(\$this->model->all(['*'], \$orderBy));
+        return {$modelName}Resource::collection(\$results);
     }
     
     /**
@@ -1041,12 +962,8 @@ class {$controllerName} extends Controller
      */
     public function show()
     {
-        \$id = \$this->request->param('id');{$withRelationsStr}
-        \${$resourceName} = \$this->model->find(\$id);
-        
-        if (!\${$resourceName}) {
-            throw new \Exception('{$modelName} not found', 404);
-        }
+        \$id = \$this->request->param('id');
+        \${$resourceName} = {$modelName}::find()->with(\$this->withRelations)->findOrFailByPk(\$id);
         
         return {$modelName}Resource::make(\${$resourceName});
     }
@@ -1063,9 +980,7 @@ class {$controllerName} extends Controller
         
         try {
             \$id = \$this->model->create(\$validated);
-            // Auto-generated eager loading
-            {$withRelationsStr}
-            \${$resourceName} = \$this->model->find(\$id);
+            \${$resourceName} = {$modelName}::find()->with(\$this->withRelations)->findOrFailByPk(\$id);
             return \$this->created({$modelName}Resource::make(\${$resourceName}));
         } catch (\PDOException \$e) {
             \$this->databaseError('Failed to create {$resourceName}', \$e);
@@ -1079,11 +994,7 @@ class {$controllerName} extends Controller
     public function update()
     {
         \$id = \$this->request->param('id');
-        \${$resourceName} = \$this->model->find(\$id);
-        
-        if (!\${$resourceName}) {
-            throw new \Exception('{$modelName} not found', 404);
-        }
+        {$modelName}::findOrFail(\$id);
         
         \$validated = \$this->validate([
 {$updateRules}
@@ -1091,9 +1002,8 @@ class {$controllerName} extends Controller
         
         try {
             \$this->model->update(\$id, \$validated);
-             // Auto-generated eager loading
-            {$withRelationsStr}
-            return {$modelName}Resource::make(\$this->model->find(\$id));
+            \${$resourceName} = {$modelName}::find()->with(\$this->withRelations)->findOrFailByPk(\$id);
+            return {$modelName}Resource::make(\${$resourceName});
         } catch (\PDOException \$e) {
             \$this->databaseError('Failed to update {$resourceName}', \$e);
         }
@@ -1106,11 +1016,7 @@ class {$controllerName} extends Controller
     public function destroy()
     {
         \$id = \$this->request->param('id');
-        \${$resourceName} = \$this->model->find(\$id);
-        
-        if (!\${$resourceName}) {
-            throw new \Exception('{$modelName} not found', 404);
-        }
+        {$modelName}::findOrFail(\$id);
         
         try {
             \$this->model->delete(\$id);

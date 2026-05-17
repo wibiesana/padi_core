@@ -78,17 +78,54 @@ class ModelQuery extends Query
     }
 
     /**
-     * Paginate results with model processing
+     * Find a single record by Primary Key
+     */
+    public function findByPk(int|string|array $id): ?array
+    {
+        $conditions = $this->model->getPkConditions($id);
+        return $this->where($conditions)->one();
+    }
+
+    /**
+     * Find a single record by Primary Key or throw 404 Exception
+     * 
+     * @throws \Exception When record is not found
+     */
+    public function findOrFailByPk(int|string|array $id): array
+    {
+        $result = $this->findByPk($id);
+        if ($result === null) {
+            throw new \Exception("Record not found in " . $this->model->getTable(), 404);
+        }
+        return $result;
+    }
+
+    /**
+     * Paginate results with model processing and standard API meta envelope
      */
     public function paginate(int $perPage = 25, int $page = 1): array
     {
         $result = parent::paginate($perPage, $page);
 
-        if (!empty($result['data'])) {
-            $result['data'] = $this->processResults($result['data']);
+        $data = $result['data'] ?? [];
+        if (!empty($data)) {
+            $data = $this->processResults($data);
         }
 
-        return $result;
+        $total = (int)($result['total'] ?? 0);
+        $offset = ($page - 1) * $perPage;
+
+        return [
+            'data' => $data,
+            'meta' => [
+                'total' => $total,
+                'per_page' => $perPage,
+                'current_page' => $page,
+                'last_page' => $perPage > 0 ? (int)ceil($total / $perPage) : 1,
+                'from' => $total > 0 ? $offset + 1 : 0,
+                'to' => min($offset + $perPage, $total)
+            ]
+        ];
     }
 
     /**
