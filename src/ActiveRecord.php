@@ -98,6 +98,14 @@ abstract class ActiveRecord
     }
 
     /**
+     * Get the database connection name
+     */
+    public function getConnectionName(): ?string
+    {
+        return $this->connection;
+    }
+
+    /**
      * Eager load relationships
      */
     public function with(array|string $relations): self
@@ -111,18 +119,22 @@ abstract class ActiveRecord
     }
 
     /**
-     * Start a new query builder for this model
+     * Start a new model-aware query builder
+     * 
+     * @deprecated Use static::find() instead.
      */
-    public static function findBuilder(): Query
+    public static function findBuilder(): ModelQuery
     {
         $instance = new static();
-        return (new Query($instance->connection))->from($instance->table);
+        return new ModelQuery($instance);
     }
 
     /**
      * Alias for findBuilder()
+     * 
+     * @deprecated Use static::find() instead.
      */
-    public static function findQuery(): Query
+    public static function findQuery(): ModelQuery
     {
         return static::findBuilder();
     }
@@ -397,11 +409,25 @@ abstract class ActiveRecord
     }
 
     /**
-     * Find record by ID (supports composite keys via array or underscore-separated string)
+     * Find record by ID, or start a model-aware query builder.
+     * 
+     * When called without arguments, returns a ModelQuery for fluent chaining:
+     *   MyModel::find()->with('relation')->orderBy('id DESC')->limit(100)->all();
+     * 
+     * When called with an ID, finds a single record by primary key:
+     *   MyModel::find(5);
+     *   MyModel::find(5, ['id', 'name']);
      */
-    public function find(int|string|array $id, array $columns = ['*']): ?array
+    public static function find(int|string|array|null $id = null, array $columns = ['*']): ModelQuery|array|null
     {
-        // Validate column names
+        $instance = new static();
+
+        // No ID: return a fluent query builder
+        if ($id === null) {
+            return new ModelQuery($instance);
+        }
+
+        // With ID: find by primary key
         $sanitizedCols = array_map(function ($col) {
             if ($col === '*') return $col;
             if (!preg_match('/^[a-zA-Z0-9_-]+$/', $col)) {
@@ -412,7 +438,7 @@ abstract class ActiveRecord
 
         $cols = implode(', ', $sanitizedCols);
 
-        $conditions = $this->getPkConditions($id);
+        $conditions = $instance->getPkConditions($id);
         $where = [];
         $params = [];
         foreach ($conditions as $col => $val) {
@@ -421,9 +447,9 @@ abstract class ActiveRecord
         }
 
         $whereClause = implode(' AND ', $where);
-        $sql = "SELECT {$cols} FROM {$this->table} WHERE {$whereClause} LIMIT 1";
+        $sql = "SELECT {$cols} FROM {$instance->table} WHERE {$whereClause} LIMIT 1";
 
-        $stmt = $this->db->prepare($sql);
+        $stmt = $instance->db->prepare($sql);
         $stmt->execute($params);
         Database::logQuery($sql, $params);
 
@@ -432,14 +458,14 @@ abstract class ActiveRecord
         if ($result) {
             $results = [$result];
 
-            if (method_exists($this, 'afterLoad')) {
-                $this->afterLoad($results);
+            if (method_exists($instance, 'afterLoad')) {
+                $instance->afterLoad($results);
             }
 
-            if (!empty($this->with)) {
-                $this->loadRelations($results);
+            if (!empty($instance->with)) {
+                $instance->loadRelations($results);
             }
-            return $this->hideFields($results)[0];
+            return $instance->hideFields($results)[0];
         }
 
         return null;
@@ -450,11 +476,12 @@ abstract class ActiveRecord
      * 
      * @throws \Exception When record is not found (HTTP 404)
      */
-    public function findOrFail(int|string|array $id, array $columns = ['*']): array
+    public static function findOrFail(int|string|array $id, array $columns = ['*']): array
     {
-        $result = $this->find($id, $columns);
+        $result = static::find($id, $columns);
         if ($result === null) {
-            throw new \Exception("Record not found in {$this->table}", 404);
+            $instance = new static();
+            throw new \Exception("Record not found in {$instance->table}", 404);
         }
         return $result;
     }
@@ -627,6 +654,50 @@ abstract class ActiveRecord
             Database::logQueryError($e, $sql, $params);
             throw $e;
         }
+    }
+
+    /**
+     * Save a record. If primary key is present in data or provided, it updates. Otherwise it creates.
+     * 
+     * @param array $data Data to save
+     * @param int|string|array|null $id Optional ID to force update
+     * @return int|string|bool Last insert ID on create, boolean on update
+     */
+    public function save(array $data, int|string|array|null $id = null): int|string|bool
+    {
+        if ($id !== null) {
+            return $this->update($id, $data);
+        }
+
+        $isNew = true;
+        $pkId = null;
+
+        if (is_array($this->primaryKey)) {
+            $hasAllKeys = true;
+            $pkId = [];
+            foreach ($this->primaryKey as $key) {
+                if (!isset($data[$key]) || $data[$key] === '' || $data[$key] === null) {
+                    $hasAllKeys = false;
+                    break;
+                }
+                $pkId[$key] = $data[$key];
+            }
+            if ($hasAllKeys) {
+                $isNew = false;
+            }
+        } else {
+            $pkName = $this->primaryKey;
+            if (isset($data[$pkName]) && $data[$pkName] !== '' && $data[$pkName] !== null) {
+                $isNew = false;
+                $pkId = $data[$pkName];
+            }
+        }
+
+        if ($isNew) {
+            return $this->create($data);
+        }
+
+        return $this->update($pkId, $data);
     }
 
     /**
@@ -965,7 +1036,7 @@ abstract class ActiveRecord
     /**
      * Hide sensitive fields
      */
-    protected function hideFields(array $data): array
+    public function hideFields(array $data): array
     {
         if (empty($this->hidden)) {
             return $data;
