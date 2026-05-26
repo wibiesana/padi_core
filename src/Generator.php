@@ -927,7 +927,7 @@ class {$controllerName} extends Controller
 
         \$query = \$search ? {$modelName}::search(substr(\$search, 0, 255)) : {$modelName}::find();
         
-        \$result = \$query->with(\$this->withRelations)
+        \$result = \$query->with(...\$this->withRelations)
             ->orderBy(\$orderBy ?? 'id DESC')
             ->paginate(\$perPage, \$page);
 
@@ -948,7 +948,7 @@ class {$controllerName} extends Controller
 
         \$query = \$search ? {$modelName}::search(substr(\$search, 0, 255)) : {$modelName}::find();
         
-        \$results = \$query->with(\$this->withRelations)
+        \$results = \$query->with(...\$this->withRelations)
             ->orderBy(\$orderBy ?? 'id DESC')
             ->limit(\$limit)
             ->all();
@@ -963,7 +963,7 @@ class {$controllerName} extends Controller
     public function show()
     {
         \$id = \$this->request->param('id');
-        \${$resourceName} = {$modelName}::find()->with(\$this->withRelations)->findOrFailByPk(\$id);
+        \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFailByPk(\$id);
         
         return {$modelName}Resource::make(\${$resourceName});
     }
@@ -980,7 +980,7 @@ class {$controllerName} extends Controller
         
         try {
             \$id = \$this->model->create(\$validated);
-            \${$resourceName} = {$modelName}::find()->with(\$this->withRelations)->findOrFailByPk(\$id);
+            \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFailByPk(\$id);
             return \$this->created({$modelName}Resource::make(\${$resourceName}));
         } catch (\PDOException \$e) {
             \$this->databaseError('Failed to create {$resourceName}', \$e);
@@ -1002,7 +1002,7 @@ class {$controllerName} extends Controller
         
         try {
             \$this->model->update(\$id, \$validated);
-            \${$resourceName} = {$modelName}::find()->with(\$this->withRelations)->findOrFailByPk(\$id);
+            \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFailByPk(\$id);
             return {$modelName}Resource::make(\${$resourceName});
         } catch (\PDOException \$e) {
             \$this->databaseError('Failed to update {$resourceName}', \$e);

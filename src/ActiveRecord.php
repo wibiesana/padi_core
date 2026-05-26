@@ -107,14 +107,24 @@ abstract class ActiveRecord
 
     /**
      * Eager load relationships
+     * 
+     * @param array|string ...$relations Relation names
      */
-    public function with(array|string $relations): self
+    public function with(array|string ...$relations): self
     {
-        if (is_string($relations)) {
-            $relations = explode(',', $relations);
+        $flat = [];
+        foreach ($relations as $relation) {
+            if (is_array($relation)) {
+                $flat = array_merge($flat, $relation);
+            } else {
+                if (strpos($relation, ':') === false && strpos($relation, ',') !== false) {
+                    $flat = array_merge($flat, array_map('trim', explode(',', $relation)));
+                } else {
+                    $flat[] = trim($relation);
+                }
+            }
         }
-
-        $this->with = array_merge($this->with, $relations);
+        $this->with = array_merge($this->with, $flat);
         return $this;
     }
 
@@ -472,13 +482,28 @@ abstract class ActiveRecord
     }
 
     /**
+     * Find a single record by primary key
+     * 
+     * Convenience alias for find($id). Supports Yii2-style usage:
+     *   MyModel::findOne(5);
+     *   MyModel::findOne(5, ['id', 'name']);
+     *   $this->modelClass::findOne($id);
+     */
+    public static function findOne(int|string|array $id, array $columns = ['*']): ?array
+    {
+        return static::find($id, $columns);
+    }
+
+
+
+    /**
      * Find record by ID or throw 404 exception
      * 
      * @throws \Exception When record is not found (HTTP 404)
      */
     public static function findOrFail(int|string|array $id, array $columns = ['*']): array
     {
-        $result = static::find($id, $columns);
+        $result = static::findOne($id, $columns);
         if ($result === null) {
             $instance = new static();
             throw new \Exception("Record not found in {$instance->table}", 404);

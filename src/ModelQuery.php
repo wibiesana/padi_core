@@ -32,22 +32,35 @@ class ModelQuery extends Query
     /**
      * Set eager loading relations
      * 
-     * @param array|string $relations Relation names (string or array)
+     * Accepts multiple calling styles:
+     * @param array|string ...$relations Relation names
      * @return $this
      * 
      * @example
      *   ->with('author')
-     *   ->with(['author', 'comments'])
-     *   ->with('author,comments')
-     *   ->with('author.profile')       // nested
-     *   ->with('author:id,name')       // select specific columns
+     *   ->with('author', 'comments')        // variadic
+     *   ->with(['author', 'comments'])       // array
+     *   ->with('author,comments')            // comma-separated
+     *   ->with('author.profile')             // nested
+     *   ->with('author:id,name')             // select specific columns
      */
-    public function with(array|string $relations): self
+    public function with(array|string ...$relations): self
     {
-        if (is_string($relations)) {
-            $relations = array_map('trim', explode(',', $relations));
+        $flat = [];
+        foreach ($relations as $relation) {
+            if (is_array($relation)) {
+                $flat = array_merge($flat, $relation);
+            } else {
+                // Only split on comma if the string doesn't contain a colon
+                // (colon syntax like 'relation:col1,col2' should NOT be split)
+                if (strpos($relation, ':') === false && strpos($relation, ',') !== false) {
+                    $flat = array_merge($flat, array_map('trim', explode(',', $relation)));
+                } else {
+                    $flat[] = trim($relation);
+                }
+            }
         }
-        $this->withRelations = array_merge($this->withRelations, $relations);
+        $this->withRelations = array_merge($this->withRelations, $flat);
         return $this;
     }
 
