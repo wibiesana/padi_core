@@ -141,7 +141,7 @@ class DatabaseManager
         $options[PDO::ATTR_TIMEOUT] = $config['timeout'] ?? 5;
 
         // Use persistent connections in worker mode (connection reuse)
-        if (function_exists('frankenphp_handle_request')) {
+        if (function_exists('frankenphp_handle_request') && isset($_SERVER['FRANKENPHP_WORKER'])) {
             $options[PDO::ATTR_PERSISTENT] = $config['persistent'] ?? false;
         }
 

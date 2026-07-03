@@ -295,7 +295,7 @@ class Response
     private function terminate(): never
     {
         // Check if running in FrankenPHP worker mode
-        if (function_exists('frankenphp_handle_request')) {
+        if (function_exists('frankenphp_handle_request') && isset($_SERVER['FRANKENPHP_WORKER'])) {
             throw new TerminateException('Response terminated intentionally.');
         }
 

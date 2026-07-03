@@ -33,7 +33,7 @@ class Application
     public function __construct(string $basePath)
     {
         $this->basePath = $basePath;
-        $this->isWorkerMode = function_exists('frankenphp_handle_request');
+        $this->isWorkerMode = function_exists('frankenphp_handle_request') && isset($_SERVER['FRANKENPHP_WORKER']);
         $this->bootstrap();
     }
 
