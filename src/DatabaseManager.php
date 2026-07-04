@@ -102,17 +102,23 @@ class DatabaseManager
             };
         } catch (PDOException $e) {
             self::$lastDatabaseError = [
-                'type' => 'connection_error',
-                'driver' => $driver,
-                'message' => $e->getMessage(),
-                'code' => $e->getCode(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
+                'type'      => 'connection_error',
+                'driver'    => $driver,
+                'message'   => $e->getMessage(),
+                'code'      => $e->getCode(),
+                'file'      => $e->getFile(),
+                'line'      => $e->getLine(),
                 'timestamp' => date('Y-m-d H:i:s'),
-                'config' => array_diff_key($config, ['password' => '', 'username' => ''])
+                'config'    => array_diff_key($config, ['password' => '', 'username' => ''])
             ];
 
             self::$databaseErrors[] = self::$lastDatabaseError;
+
+            // Cap error history — same limit as logError() — to prevent unbounded
+            // memory growth when DB is down and connections are retried repeatedly.
+            if (count(self::$databaseErrors) > self::$maxErrorHistory) {
+                self::$databaseErrors = array_slice(self::$databaseErrors, -self::$maxErrorHistory);
+            }
 
             throw new PDOException(
                 "Failed to connect to {$driver} database: " . $e->getMessage(),

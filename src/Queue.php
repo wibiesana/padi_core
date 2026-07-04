@@ -88,15 +88,24 @@ class Queue
 
     /**
      * Run the queue worker (blocking loop)
+     * 
+     * Worker mode safe:
+     * - gc_collect_cycles() called every QUEUE_GC_INTERVAL jobs (default: 100)
+     * - Worker exits after QUEUE_MAX_JOBS jobs (default: 1000) for memory reset
+     *   (process supervisor, e.g., Supervisor or Docker, should auto-restart it)
      */
     public static function work(string $queue = 'default'): void
     {
         self::initTable();
-        $db = Database::connection();
+        $db          = Database::connection();
         $maxAttempts = (int)Env::get('QUEUE_MAX_ATTEMPTS', '3');
         $sleepSeconds = (int)Env::get('QUEUE_SLEEP', '3');
+        $gcInterval  = max(1, (int)Env::get('QUEUE_GC_INTERVAL', '100'));
+        $maxJobs     = max(0, (int)Env::get('QUEUE_MAX_JOBS', '1000'));
 
         echo "Worker started on queue: {$queue} [" . date('Y-m-d H:i:s') . "]\n";
+
+        $processedCount = 0;
 
         while (true) {
             $db->beginTransaction();
@@ -125,7 +134,7 @@ class Queue
                             $db->prepare("DELETE FROM jobs WHERE id = :id")->execute(['id' => $job['id']]);
                             echo "REMOVED (Max attempts reached)\n";
                             Logger::error("Job deleted after max attempts", [
-                                'id' => $job['id'],
+                                'id'      => $job['id'],
                                 'payload' => $job['payload']
                             ]);
                         } else {
@@ -133,6 +142,20 @@ class Queue
                                 ->execute(['id' => $job['id']]);
                             echo "FAILED (Will retry)\n";
                         }
+                    }
+
+                    $processedCount++;
+
+                    // Periodic GC: clean up circular references from job objects
+                    if ($processedCount % $gcInterval === 0) {
+                        gc_collect_cycles();
+                    }
+
+                    // Graceful restart: exit after max jobs so supervisor can restart
+                    // with a clean memory state (prevents long-term memory creep)
+                    if ($maxJobs > 0 && $processedCount >= $maxJobs) {
+                        echo "Worker processed {$maxJobs} jobs — restarting for memory hygiene.\n";
+                        exit(0);
                     }
                 } else {
                     $db->rollBack();
@@ -158,7 +181,7 @@ class Queue
         }
 
         $jobClass = $payload['job'] ?? '';
-        $data = $payload['data'] ?? [];
+        $data     = $payload['data'] ?? [];
 
         if (!class_exists($jobClass)) {
             Logger::error("Job class not found: {$jobClass}");
@@ -169,13 +192,16 @@ class Queue
             $instance = new $jobClass();
             if (method_exists($instance, 'handle')) {
                 $instance->handle($data);
+                // Explicitly unset to allow faster GC of job objects and any
+                // references they hold (DB results, services, etc.)
+                unset($instance);
                 return true;
             }
             Logger::error("Job class has no handle() method: {$jobClass}");
         } catch (Exception $e) {
             Logger::error("Job failed: {$jobClass}", [
                 'error' => $e->getMessage(),
-                'data' => $data
+                'data'  => $data
             ]);
         }
 

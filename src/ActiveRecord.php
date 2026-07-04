@@ -58,6 +58,19 @@ abstract class ActiveRecord
     private static array $columnsCache = [];
 
     /**
+     * Timestamps for columns cache entries (used for TTL-based invalidation)
+     * @var array<string,int>
+     */
+    private static array $columnsCacheTtl = [];
+
+    /**
+     * TTL for columns cache in seconds. Default: 3600s (1 hour).
+     * Set COLUMNS_CACHE_TTL=0 in .env to cache forever (original behavior).
+     * Setting a TTL allows cache to refresh after ALTER TABLE without worker restart.
+     */
+    private static int $columnsCacheTtlSeconds = 3600;
+
+    /**
      * Clear columns cache.
      * 
      * In worker mode, call this during lifecycle management to free memory.
@@ -65,7 +78,8 @@ abstract class ActiveRecord
      */
     public static function clearColumnsCache(): void
     {
-        self::$columnsCache = [];
+        self::$columnsCache    = [];
+        self::$columnsCacheTtl = [];
     }
 
     /**
@@ -95,6 +109,12 @@ abstract class ActiveRecord
     {
         // Use specified connection or default
         $this->db = Database::connection($this->connection);
+
+        // Load columns cache TTL from env once (static — only set on first instantiation)
+        if (self::$columnsCacheTtlSeconds === 3600) {
+            $envTtl = Env::get('COLUMNS_CACHE_TTL', '3600');
+            self::$columnsCacheTtlSeconds = max(0, (int)$envTtl);
+        }
     }
 
     /**
@@ -125,6 +145,18 @@ abstract class ActiveRecord
             }
         }
         $this->with = array_merge($this->with, $flat);
+        return $this;
+    }
+
+    /**
+     * Clear eager-loaded relation definitions on this instance.
+     * 
+     * Call this when reusing a model instance across multiple queries
+     * to prevent relations from accumulating unintentionally.
+     */
+    public function clearWith(): self
+    {
+        $this->with = [];
         return $this;
     }
 
@@ -974,12 +1006,24 @@ abstract class ActiveRecord
     }
 
     /**
-     * Get table columns (cached). Uses PDO column metadata when available.
+     * Get table columns (cached with TTL). Uses PDO column metadata when available.
+     * 
+     * Cache TTL defaults to 3600s so that ALTER TABLE changes are picked up
+     * in worker mode without requiring a full process restart.
+     * Set COLUMNS_CACHE_TTL=0 in .env to disable TTL (cache forever).
      */
     protected function getTableColumns(): array
     {
+        $now = time();
+        $ttl = self::$columnsCacheTtlSeconds;
+
+        // Serve from cache if present and not expired
         if (isset(self::$columnsCache[$this->table])) {
-            return self::$columnsCache[$this->table];
+            $cachedAt = self::$columnsCacheTtl[$this->table] ?? 0;
+            if ($ttl === 0 || ($now - $cachedAt) < $ttl) {
+                return self::$columnsCache[$this->table];
+            }
+            // Expired — fall through to re-fetch
         }
 
         $columns = [];
@@ -1011,7 +1055,8 @@ abstract class ActiveRecord
             }
         }
 
-        self::$columnsCache[$this->table] = $columns;
+        self::$columnsCache[$this->table]    = $columns;
+        self::$columnsCacheTtl[$this->table] = $now;
         return $columns;
     }
 

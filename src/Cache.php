@@ -36,6 +36,13 @@ class Cache
     private static array $memory = [];
     private static int $maxMemory = 1000;
 
+    /**
+     * Maximum PHP memory usage (bytes) before L1 cache is force-cleared.
+     * Configurable via CACHE_L1_MAX_MEMORY_MB env (default: 64 MB).
+     * Set to 0 to disable memory-usage-based eviction.
+     */
+    private static int $maxMemoryBytes = 67108864; // 64 MB default
+
     // ─── Initialization ─────────────────────────────────────────────────
 
     private static function init(): void
@@ -44,8 +51,12 @@ class Cache
             return;
         }
 
-        self::$driver = Env::get('CACHE_DRIVER', 'file');
+        self::$driver    = Env::get('CACHE_DRIVER', 'file');
         self::$maxMemory = (int) Env::get('CACHE_L1_MAX', '1000');
+
+        // Load memory guard limit (convert MB -> bytes; 0 = disabled)
+        $maxMb = (int) Env::get('CACHE_L1_MAX_MEMORY_MB', '64');
+        self::$maxMemoryBytes = $maxMb > 0 ? $maxMb * 1048576 : 0;
 
         match (self::$driver) {
             'redis' => self::initRedis(),
@@ -193,9 +204,20 @@ class Cache
 
     /**
      * Write to L1 with bounded eviction (oldest 25% bulk-evicted).
+     * 
+     * Two eviction triggers:
+     * 1. Entry count reaches $maxMemory → evict oldest 25%.
+     * 2. PHP memory_get_usage() exceeds $maxMemoryBytes → flush all L1.
+     *    This prevents large cached values from exhausting process memory
+     *    in FrankenPHP worker mode where the process is long-lived.
      */
     private static function setMemory(string $key, mixed $value, int $expires): void
     {
+        // Memory-usage-based guard (worker mode safety net)
+        if (self::$maxMemoryBytes > 0 && memory_get_usage() > self::$maxMemoryBytes) {
+            self::$memory = [];
+        }
+
         if (count(self::$memory) >= self::$maxMemory && !isset(self::$memory[$key])) {
             $evict = (int) (self::$maxMemory * 0.25);
             self::$memory = array_slice(self::$memory, $evict, null, true);

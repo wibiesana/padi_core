@@ -8,7 +8,35 @@ use Exception;
 
 /**
  * File Upload/Download Helper
- * 
+ *
+ * ## Storage Best Practice — "Relative Path in DB, Full URL in Response"
+ *
+ * File::upload() returns a RELATIVE path (e.g. "images/abc123.jpg").
+ * ALWAYS store this relative path in the database — never the full URL.
+ *
+ *   ✅ DB column: "images/abc123.jpg"
+ *   ❌ DB column: "http://192.168.1.5:8085/uploads/images/abc123.jpg"
+ *
+ * When you need to expose the URL in an API response, call File::url():
+ *   File::url('images/abc123.jpg')
+ *   → "https://api.example.com/uploads/images/abc123.jpg"
+ *
+ * This way the URL is always built from the CURRENT request, so the
+ * application works on any server (dev, staging, production) without
+ * any configuration change.
+ *
+ * The recommended pattern is to transform paths inside afterLoad():
+ *
+ *   class Product extends ActiveRecord {
+ *       public function afterLoad(array &$items): void {
+ *           foreach ($items as &$item) {
+ *               if (!empty($item['photo'])) {
+ *                   $item['photo_url'] = File::url($item['photo']);
+ *               }
+ *           }
+ *       }
+ *   }
+ *
  * Security:
  * - Path traversal validation
  * - MIME type verification (not just extension)
@@ -153,12 +181,93 @@ class File
 
     /**
      * Get full URL for a file
+     *
+     * Base URL resolution order (first non-empty wins):
+     *  1. APP_URL env  — explicit override (useful behind reverse proxies / CDN).
+     *     Leave APP_URL empty (or remove it) to enable full auto-detection.
+     *  2. Current HTTP request — scheme + host auto-detected so the URL always
+     *     matches whichever server is handling the request.
+     *  3. 'http://localhost' — last-resort fallback for CLI / test contexts.
+     *
+     * This means uploaded files remain accessible after moving to a new server
+     * without touching any configuration.
      */
     public static function url(string $path): string
     {
-        $appUrl = Env::get('APP_URL', 'http://localhost:8085');
+        // If the stored value is already a full URL (e.g. from legacy data), return as-is
+        if (self::isAbsoluteUrl($path)) {
+            return $path;
+        }
+
+        $baseUrl   = self::resolveBaseUrl();
         $sanitized = self::sanitizePath($path);
-        return rtrim($appUrl, '/') . '/' . self::$uploadDir . '/' . $sanitized;
+        return rtrim($baseUrl, '/') . '/' . self::$uploadDir . '/' . $sanitized;
+    }
+
+    /**
+     * Get file URL, or null if path is empty/null.
+     *
+     * Safe to use directly on nullable DB columns:
+     *
+     *   $item['photo_url'] = File::urlOrNull($item['photo'] ?? null);
+     *   // Returns null when photo column is empty — no broken URL
+     */
+    public static function urlOrNull(?string $path): ?string
+    {
+        if ($path === null || $path === '') {
+            return null;
+        }
+        return self::url($path);
+    }
+
+    /**
+     * Check whether a string is already a fully-qualified URL.
+     *
+     * Useful in afterLoad() to skip re-prefixing values that were accidentally
+     * stored as full URLs in legacy data:
+     *
+     *   if (!File::isAbsoluteUrl($item['photo'])) {
+     *       $item['photo'] = File::url($item['photo']);
+     *   }
+     */
+    public static function isAbsoluteUrl(string $path): bool
+    {
+        return str_starts_with($path, 'http://') || str_starts_with($path, 'https://');
+    }
+
+    /**
+     * Resolve the application base URL.
+     *
+     * When APP_URL is set in .env it is returned as-is so operators can
+     * explicitly pin the public URL (e.g. behind a CDN or custom domain).
+     * When APP_URL is absent or empty the URL is built from the live request,
+     * so the API stays portable across servers without any configuration changes.
+     */
+    private static function resolveBaseUrl(): string
+    {
+        // 1. Explicit override — respect what the operator configured
+        $configured = Env::get('APP_URL', '');
+        if ($configured !== '' && $configured !== null) {
+            return rtrim((string)$configured, '/');
+        }
+
+        // 2. Auto-detect from the current HTTP request
+        if (PHP_SAPI !== 'cli' && !empty($_SERVER['HTTP_HOST'])) {
+            // Determine scheme — check common reverse-proxy / load-balancer headers first
+            $isHttps =
+                (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+                || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')
+                || (!empty($_SERVER['HTTP_X_FORWARDED_SSL']) && $_SERVER['HTTP_X_FORWARDED_SSL'] === 'on')
+                || (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443);
+
+            $scheme = $isHttps ? 'https' : 'http';
+
+            // HTTP_HOST already includes the port when it is non-standard
+            return $scheme . '://' . $_SERVER['HTTP_HOST'];
+        }
+
+        // 3. Last-resort fallback (CLI, tests, etc.)
+        return 'http://localhost';
     }
 
     /**

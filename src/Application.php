@@ -95,7 +95,20 @@ class Application
         });
 
         // Global Exception Handler
-        set_exception_handler([$this, 'handleException']);
+        // Use a static closure referencing $this via a WeakReference to avoid
+        // keeping the Application instance alive via the global handler registry.
+        $weakSelf = \WeakReference::create($this);
+        set_exception_handler(static function (\Throwable $exception) use ($weakSelf): void {
+            $app = $weakSelf->get();
+            if ($app !== null) {
+                $app->handleException($exception);
+            } else {
+                // Fallback if Application was already destroyed
+                http_response_code(500);
+                header('Content-Type: application/json');
+                echo json_encode(['success' => false, 'message' => 'Internal Server Error']);
+            }
+        });
     }
 
     /**
@@ -310,6 +323,7 @@ class Application
     {
         if ($this->isWorkerMode) {
             $maxRequests = (int)Env::get('MAX_REQUESTS', '500');
+            $gcInterval  = max(1, (int)Env::get('GC_INTERVAL', '50'));
             $count = 0;
 
             while (frankenphp_handle_request(function (): void {
@@ -323,6 +337,12 @@ class Application
                 }
             })) {
                 ++$count;
+
+                // Periodic GC: collect circular references from controllers/services
+                // without waiting for the full worker restart cycle.
+                if ($count % $gcInterval === 0) {
+                    gc_collect_cycles();
+                }
 
                 if ($count >= $maxRequests) {
                     // Graceful worker restart to prevent memory buildup

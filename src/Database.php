@@ -22,6 +22,12 @@ class Database
     private static int $queryCount = 0;
     private static array $queries = [];
 
+    /** @var int Maximum query log entries when APP_DEBUG=true (prevents unbounded memory growth) */
+    private static int $maxQueryLog = 100;
+
+    /** @var int Maximum params entries to store per query log (prevents large payload storage) */
+    private static int $maxQueryParams = 20;
+
     private function __construct()
     {
         $this->connection = DatabaseManager::connection();
@@ -57,11 +63,15 @@ class Database
         self::$queryCount++;
 
         if (Env::get('APP_DEBUG', 'false') === 'true') {
-            self::$queries[] = [
-                'query' => $query,
-                'params' => $params,
-                'time' => microtime(true)
-            ];
+            // Cap query log to prevent unbounded memory growth in worker mode or long-lived PHP-FPM processes
+            if (count(self::$queries) < self::$maxQueryLog) {
+                self::$queries[] = [
+                    'query'  => $query,
+                    // Cap params to prevent storing large payloads (e.g., bulk inserts)
+                    'params' => array_slice($params, 0, self::$maxQueryParams),
+                    'time'   => microtime(true)
+                ];
+            }
         }
     }
 
