@@ -46,8 +46,11 @@ class Request
     {
         foreach ($_SERVER as $key => $value) {
             if (str_starts_with($key, 'HTTP_')) {
-                $header = str_replace(' ', '-', ucwords(strtolower(str_replace('_', ' ', substr($key, 5)))));
-                $this->headers[$header] = $value;
+                // Convert HTTP_ACCEPT_LANGUAGE → Accept-Language
+                // Using strtr() + ucwords is faster than the str_replace chain
+                // as it creates fewer intermediate strings
+                $header = ucwords(strtolower(strtr(substr($key, 5), '_', ' ')));
+                $this->headers[strtr($header, ' ', '-')] = $value;
             }
         }
 

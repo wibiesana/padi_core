@@ -18,8 +18,11 @@ namespace Wibiesana\Padi\Core;
  */
 class Router
 {
-    /** @var array<int, array> Registered routes */
+    /** @var array<string, array<int, array>> Routes indexed by HTTP method */
     private array $routes = [];
+
+    /** @var string|null Last registered route's HTTP method (for middleware chaining) */
+    private ?string $lastMethod = null;
 
     /** @var string Current group prefix */
     private string $prefix = '';
@@ -124,13 +127,15 @@ class Router
     public function middleware($middleware): self
     {
         $middlewares = is_array($middleware) ? $middleware : [$middleware];
-        $lastRouteKey = array_key_last($this->routes);
 
-        if ($lastRouteKey !== null) {
-            $this->routes[$lastRouteKey]['middlewares'] = array_merge(
-                $this->routes[$lastRouteKey]['middlewares'],
-                $middlewares
-            );
+        if ($this->lastMethod !== null && !empty($this->routes[$this->lastMethod])) {
+            $lastRouteKey = array_key_last($this->routes[$this->lastMethod]);
+            if ($lastRouteKey !== null) {
+                $this->routes[$this->lastMethod][$lastRouteKey]['middlewares'] = array_merge(
+                    $this->routes[$this->lastMethod][$lastRouteKey]['middlewares'],
+                    $middlewares
+                );
+            }
         }
 
         return $this;
@@ -151,13 +156,15 @@ class Router
         $regex = preg_replace('/\{([a-zA-Z0-9_]+)\}/', '(?P<$1>[^/]+)', $regex);
         $regex = '#^' . $regex . '$#';
 
-        $this->routes[] = [
-            'method' => $method,
+        // Index by method for O(routes/methods) dispatch instead of O(routes)
+        $this->routes[$method][] = [
             'path' => $path,
             'regex' => $regex,
             'handler' => $handler,
             'middlewares' => $this->groupMiddlewares
         ];
+
+        $this->lastMethod = $method;
 
         return $this;
     }
@@ -174,12 +181,10 @@ class Router
         $method = $request->method();
         $uri = rtrim($request->uri(), '/') ?: '/';
 
-        foreach ($this->routes as $route) {
-            // Fast path: skip routes with a different HTTP method
-            if ($route['method'] !== $method) {
-                continue;
-            }
+        // Method-indexed lookup: only iterate routes matching the HTTP method
+        $methodRoutes = $this->routes[$method] ?? [];
 
+        foreach ($methodRoutes as $route) {
             if (preg_match($route['regex'], $uri, $matches)) {
                 // Extract named parameters only
                 $params = array_filter($matches, 'is_string', ARRAY_FILTER_USE_KEY);

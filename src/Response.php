@@ -250,9 +250,8 @@ class Response
 
         http_response_code($this->statusCode);
 
-        // Security headers (defense in depth, also set in Application)
-        header('X-Frame-Options: DENY');
-        header('X-Content-Type-Options: nosniff');
+        // Security headers are set once by Application::sendSecurityHeaders()
+        // No duplicate headers here — reduces 2 header() calls per response.
 
         foreach ($this->headers as $key => $value) {
             header("{$key}: {$value}");

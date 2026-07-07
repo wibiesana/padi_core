@@ -75,6 +75,8 @@ class Env
      * Get environment variable
      * 
      * Priority: $_ENV > getenv() > $default
+     * When getenv() succeeds, result is cached in $_ENV to avoid
+     * repeated system calls on subsequent lookups.
      */
     public static function get(string $key, mixed $default = null): mixed
     {
@@ -84,6 +86,8 @@ class Env
 
         $env = getenv($key);
         if ($env !== false) {
+            // Cache in $_ENV so next lookup skips the getenv() system call
+            $_ENV[$key] = $env;
             return $env;
         }
 

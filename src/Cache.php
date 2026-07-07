@@ -36,6 +36,15 @@ class Cache
     private static array $memory = [];
     private static int $maxMemory = 1000;
 
+    /** @var object Reusable sentinel for cache-miss detection (avoids new stdClass per call) */
+    private static object $miss;
+
+    /** Get the reusable miss sentinel (lazy-initialized once) */
+    private static function miss(): object
+    {
+        return self::$miss ??= new \stdClass();
+    }
+
     /**
      * Maximum PHP memory usage (bytes) before L1 cache is force-cleared.
      * Configurable via CACHE_L1_MAX_MEMORY_MB env (default: 64 MB).
@@ -333,7 +342,7 @@ class Cache
     {
         self::init();
 
-        $miss = new \stdClass(); // unique sentinel
+        $miss = self::miss();
 
         // L1
         $value = self::getFromMemory($key, $miss);
@@ -396,7 +405,7 @@ class Cache
     {
         self::init();
 
-        $miss = new \stdClass();
+        $miss = self::miss();
         if (self::getFromMemory($key, $miss) !== $miss) {
             return true;
         }
@@ -477,7 +486,7 @@ class Cache
      */
     public static function remember(string $key, int $ttl, callable $callback): mixed
     {
-        $miss  = new \stdClass();
+        $miss  = self::miss();
         $value = self::get($key, $miss);
 
         if ($value !== $miss) {

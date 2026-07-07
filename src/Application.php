@@ -205,6 +205,9 @@ class Application
             }
         } elseif ($this->isDevelopment) {
             header('Access-Control-Allow-Origin: *');
+        } else {
+            // No origin + production = not a CORS request, skip remaining headers
+            return;
         }
 
         header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, PATCH');

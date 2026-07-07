@@ -153,14 +153,13 @@ class DatabaseManager
 
         $pdo = new PDO($dsn, $config['username'], $config['password'], $options);
 
-        // Set session-level optimizations for MariaDB/MySQL
-        $pdo->exec("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
-
-        // Set session timeout (critical for shared hosting with low wait_timeout)
-        // Prevents premature connection closure during long worker processes
+        // Set session-level optimizations in a single round-trip (3 queries → 1)
         $waitTimeout = (int)($config['wait_timeout'] ?? 28800);
-        $pdo->exec("SET SESSION wait_timeout = {$waitTimeout}");
-        $pdo->exec("SET SESSION interactive_timeout = {$waitTimeout}");
+        $pdo->exec(
+            "SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', " .
+            "SESSION wait_timeout = {$waitTimeout}, " .
+            "SESSION interactive_timeout = {$waitTimeout}"
+        );
 
         return $pdo;
     }
