@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Wibiesana\Padi\Core;
 
-use Predis\Client as RedisClient;
-
 /**
  * Cache — L1 (memory) + L2 (Redis | File) with bounded eviction
  *
@@ -22,6 +20,10 @@ use Predis\Client as RedisClient;
  * - JSON-only encoding prevents PHP object injection
  * - Cache directory restricted to 0750
  * - Key names hashed to prevent directory traversal
+ *
+ * Redis drivers (optional, install one if using CACHE_DRIVER=redis):
+ * - predis/predis (pure PHP, no extension needed)
+ * - ext-redis (C extension, faster)
  */
 class Cache
 {
@@ -30,7 +32,8 @@ class Cache
     private static string $cacheDir;
     private static int $defaultTtl = 300;
     private static ?string $driver = null;
-    private static ?RedisClient $redis = null;
+    /** @var \Predis\Client|\Redis|null */
+    private static object|null $redis = null;
 
     /** @var array<string, array{value: mixed, expires: int}> */
     private static array $memory = [];
@@ -100,6 +103,50 @@ class Cache
         $database = (int) Env::get('REDIS_DATABASE', '0');
         $prefix   = Env::get('REDIS_PREFIX', 'padi:');
 
+        // Try ext-redis first (faster, C extension), then Predis (pure PHP)
+        if (extension_loaded('redis')) {
+            self::initExtRedis($host, $port, $username, $password, $database, $prefix);
+        } elseif (class_exists('\Predis\Client')) {
+            self::initPredis($host, $port, $username, $password, $database, $prefix);
+        } else {
+            error_log('[padi] Redis driver requested but neither ext-redis nor predis/predis is installed. Falling back to file cache.');
+            self::$driver = 'file';
+            self::initFile();
+        }
+    }
+
+    private static function initExtRedis(string $host, int $port, string $username, string $password, int $database, string $prefix): void
+    {
+        if (!self::tryRedis(function () use ($host, $port, $username, $password, $database, $prefix) {
+            $redis = new \Redis();
+            $redis->connect($host, $port, 2.0); // 2s timeout
+
+            if ($username !== '' && $password !== '') {
+                $redis->auth([$username, $password]);
+            } elseif ($password !== '') {
+                $redis->auth($password);
+            }
+
+            if ($database > 0) {
+                $redis->select($database);
+            }
+
+            if ($prefix !== '') {
+                $redis->setOption(\Redis::OPT_PREFIX, $prefix);
+            }
+
+            self::$redis = $redis;
+        }, 'connection')) {
+            return;
+        }
+
+        if (self::$redis !== null) {
+            self::tryRedis(fn () => self::$redis->ping(), 'ping');
+        }
+    }
+
+    private static function initPredis(string $host, int $port, string $username, string $password, int $database, string $prefix): void
+    {
         $config = [
             'scheme'             => 'tcp',
             'host'               => $host,
@@ -108,7 +155,6 @@ class Cache
             'read_write_timeout' => 2,
         ];
 
-        // Redis 6+ ACL: AUTH username password
         if ($username !== '' && $password !== '') {
             $config['username'] = $username;
             $config['password'] = $password;
@@ -120,7 +166,7 @@ class Cache
             $config['prefix'] = $prefix;
         }
 
-        if (!self::tryRedis(fn () => self::$redis = new RedisClient($config), 'connection')) {
+        if (!self::tryRedis(fn () => self::$redis = new \Predis\Client($config), 'connection')) {
             return;
         }
 
@@ -166,8 +212,17 @@ class Cache
             return true;
         } catch (\Exception) {
             return self::tryRedis(function () {
-                self::$redis->disconnect();
-                self::$redis->connect();
+                if (self::$redis instanceof \Redis) {
+                    self::$redis->close();
+                    self::$redis->connect(
+                        Env::get('REDIS_HOST', '127.0.0.1'),
+                        (int) Env::get('REDIS_PORT', '6379'),
+                        2.0,
+                    );
+                } else {
+                    self::$redis->disconnect();
+                    self::$redis->connect();
+                }
                 self::$redis->ping();
             }, 'reconnect');
         }

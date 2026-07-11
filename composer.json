@@ -11,10 +11,12 @@
     ],
     "require": {
         "php": ">=8.4",
-        "firebase/php-jwt": "^7.0",
-        "monolog/monolog": "^3.10",
-        "phpmailer/phpmailer": "^7.0",
-        "predis/predis": "^3.3"
+        "firebase/php-jwt": "^7.0"
+    },
+    "suggest": {
+        "predis/predis": "Required for Redis cache driver (^3.3)",
+        "phpmailer/phpmailer": "Required for SMTP email support (^7.0)",
+        "ext-redis": "Alternative to predis/predis for Redis cache (faster, C extension)"
     },
     "autoload": {
         "psr-4": {

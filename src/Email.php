@@ -4,14 +4,13 @@ declare(strict_types=1);
 
 namespace Wibiesana\Padi\Core;
 
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
-
 /**
  * Email Helper - Send emails via PHPMailer
  * 
  * Worker-mode safe: creates fresh PHPMailer instance per send.
  * Shared hosting safe: supports SMTP and PHP mail().
+ * 
+ * Requires: phpmailer/phpmailer (optional dependency, install via composer require phpmailer/phpmailer)
  */
 class Email
 {
@@ -23,9 +22,16 @@ class Email
      * @param string $body HTML email body
      * @param array $attachments File paths to attach
      * @return bool Success status
+     * @throws \RuntimeException If phpmailer/phpmailer is not installed
      */
     public static function send(string $to, string $subject, string $body, array $attachments = []): bool
     {
+        if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
+            throw new \RuntimeException(
+                'PHPMailer is required for sending emails. Install it via: composer require phpmailer/phpmailer'
+            );
+        }
+
         // Validate email address
         if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
             Logger::error("Invalid email recipient", ['to' => $to]);
@@ -41,7 +47,7 @@ class Email
         }
 
         $config = require $configPath;
-        $mail = new PHPMailer(true);
+        $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
 
         try {
             // Server settings
@@ -51,7 +57,7 @@ class Email
                 $mail->SMTPAuth   = true;
                 $mail->Username   = $config['username'];
                 $mail->Password   = $config['password'];
-                $mail->SMTPSecure = $config['encryption'] === 'tls' ? PHPMailer::ENCRYPTION_STARTTLS : PHPMailer::ENCRYPTION_SMTPS;
+                $mail->SMTPSecure = $config['encryption'] === 'tls' ? \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS : \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS;
                 $mail->Port       = $config['port'];
                 $mail->Timeout    = $config['timeout'] ?? 30;
             }
@@ -75,7 +81,7 @@ class Email
 
             $mail->send();
             return true;
-        } catch (Exception $e) {
+        } catch (\PHPMailer\PHPMailer\Exception $e) {
             if (Env::get('APP_DEBUG') === 'true') {
                 error_log("Email failed to send: " . $mail->ErrorInfo);
             }
