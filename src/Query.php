@@ -34,11 +34,14 @@ class Query
     protected array $join = [];
     protected array $orderBy = [];
     protected array $groupBy = [];
-    protected ?string $having = null;
+    protected array $having = [];
     protected ?int $limit = null;
     protected ?int $offset = null;
     protected bool $distinct = false;
     protected bool $autoIlike = true;
+    /** @var string|callable|null */
+    protected mixed $indexBy = null;
+    protected array $union = [];
 
     public function __construct(?string $connection = null)
     {
@@ -71,10 +74,12 @@ class Query
         $this->join = [];
         $this->orderBy = [];
         $this->groupBy = [];
-        $this->having = null;
+        $this->having = [];
         $this->limit = null;
         $this->offset = null;
         $this->distinct = false;
+        $this->indexBy = null;
+        $this->union = [];
         return $this;
     }
 
@@ -112,6 +117,31 @@ class Query
     public function distinct(bool $value = true): self
     {
         $this->distinct = $value;
+        return $this;
+    }
+
+    /**
+     * Index the query results by the specified column or custom callback.
+     * 
+     * @param string|callable|null $column The name of the column or a callable returning the key.
+     * @return $this
+     */
+    public function indexBy(string|callable|null $column): self
+    {
+        $this->indexBy = $column;
+        return $this;
+    }
+
+    /**
+     * Add a UNION clause to the query.
+     * 
+     * @param Query $query The query to union with.
+     * @param bool $all Whether to use UNION ALL (default false).
+     * @return $this
+     */
+    public function union(Query $query, bool $all = false): self
+    {
+        $this->union[] = [$query, $all];
         return $this;
     }
 
@@ -299,13 +329,144 @@ class Query
     }
 
     /**
-     * Set HAVING condition
+     * Add columns to the GROUP BY clause.
+     * 
+     * @param string|array $columns Columns to group by.
+     * @return $this
      */
-    public function having(string $condition, array $params = []): self
+    public function addGroupBy(string|array $columns): self
     {
-        $this->having = $condition;
+        if (is_string($columns)) {
+            $columns = [$columns];
+        }
+        $this->groupBy = array_merge($this->groupBy, $columns);
+        return $this;
+    }
+
+    /**
+     * Set HAVING condition (replaces existing conditions)
+     * 
+     * Supports both raw string and array format:
+     *   ->having('COUNT(id) > 5')
+     *   ->having('COUNT(id) > :min', ['min' => 5])
+     *   ->having(['>', 'COUNT(id)', 5])
+     */
+    public function having(string|array $condition, array $params = []): self
+    {
+        $this->having = [$condition];
         $this->addParams($params);
         return $this;
+    }
+
+    /**
+     * Add AND HAVING condition
+     */
+    public function andHaving(string|array $condition, array $params = []): self
+    {
+        if (empty($this->having)) {
+            $this->having = [$condition];
+        } else {
+            $this->having[] = 'AND';
+            $this->having[] = $condition;
+        }
+        $this->addParams($params);
+        return $this;
+    }
+
+    /**
+     * Add OR HAVING condition
+     */
+    public function orHaving(string|array $condition, array $params = []): self
+    {
+        if (empty($this->having)) {
+            $this->having = [$condition];
+        } else {
+            $this->having[] = 'OR';
+            $this->having[] = $condition;
+        }
+        $this->addParams($params);
+        return $this;
+    }
+
+    /**
+     * Build HAVING clause from conditions array
+     */
+    protected function buildHaving(array $conditions): string
+    {
+        if (empty($conditions)) {
+            return '';
+        }
+
+        $parts = [];
+        $keys = array_keys($conditions);
+        $count = count($keys);
+        $i = 0;
+
+        foreach ($conditions as $key => $value) {
+            if (is_int($key)) {
+                if (is_array($value)) {
+                    $parts[] = $this->parseHavingCondition($value);
+                } else {
+                    $parts[] = $value;
+                }
+            } else {
+                $parts[] = $this->parseHavingCondition([$key => $value]);
+
+                if ($i < $count - 1) {
+                    $nextKey = $keys[$i + 1];
+                    if (!(is_int($nextKey) && in_array(strtoupper((string)$conditions[$nextKey]), ['AND', 'OR']))) {
+                        $parts[] = 'AND';
+                    }
+                }
+            }
+            $i++;
+        }
+
+        return implode(' ', array_filter($parts));
+    }
+
+    /**
+     * Parse having condition
+     */
+    protected function parseHavingCondition(array|string $condition): string
+    {
+        if (is_string($condition)) {
+            return $condition;
+        }
+        return $this->parseHavingArray($condition);
+    }
+
+    /**
+     * Parse array-format HAVING condition into SQL string.
+     * 
+     * Supported: ['>', 'COUNT(col)', value] or ['between', 'SUM(col)', [min, max]]
+     */
+    private function parseHavingArray(array $condition): string
+    {
+        if (count($condition) !== 3) {
+            throw new \InvalidArgumentException('Array HAVING condition must have exactly 3 elements: [operator, expression, value]');
+        }
+
+        $operator = strtoupper((string)$condition[0]);
+        $expression = (string)$condition[1];
+        $value = $condition[2];
+
+        $allowedOps = ['=', '!=', '<>', '>', '<', '>=', '<=', 'BETWEEN', 'NOT BETWEEN'];
+        if (!in_array($operator, $allowedOps)) {
+            throw new \InvalidArgumentException("Unsupported HAVING operator: '{$operator}'");
+        }
+
+        if (($operator === 'BETWEEN' || $operator === 'NOT BETWEEN') && is_array($value) && count($value) === 2) {
+            $p1 = ':having_' . count($this->params) . '_1';
+            $p2 = ':having_' . count($this->params) . '_2';
+            $this->params[$p1] = $value[0];
+            $this->params[$p2] = $value[1];
+            return "{$expression} {$operator} {$p1} AND {$p2}";
+        }
+
+        $paramName = ':having_' . count($this->params);
+        $this->params[$paramName] = $value;
+        return "{$expression} {$operator} {$paramName}";
     }
 
     /**
@@ -366,7 +527,33 @@ class Query
         $stmt = $this->db->prepare($sql);
         $this->bindAndExecute($stmt, $params);
         Database::logQuery($sql, $params);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if ($this->indexBy !== null) {
+            $indexed = [];
+            foreach ($rows as $row) {
+                if (is_callable($this->indexBy)) {
+                    $key = call_user_func($this->indexBy, $row);
+                } else {
+                    // Strip table prefix if any (e.g. 'customer.id' -> key is 'id' in row)
+                    $keyName = (string)$this->indexBy;
+                    if (strpos($keyName, '.') !== false) {
+                        $parts = explode('.', $keyName);
+                        $keyName = end($parts);
+                    }
+                    $key = $row[$keyName] ?? null;
+                }
+                
+                if ($key !== null) {
+                    $indexed[$key] = $row;
+                } else {
+                    $indexed[] = $row;
+                }
+            }
+            return $indexed;
+        }
+
+        return $rows;
     }
 
     /**
@@ -689,8 +876,8 @@ class Query
         }
 
         // HAVING
-        if ($this->having !== null) {
-            $sql .= ' HAVING ' . $this->having;
+        if (!empty($this->having)) {
+            $sql .= ' HAVING ' . $this->buildHaving($this->having);
         }
 
         // ORDER BY
@@ -719,6 +906,25 @@ class Query
 
         if ($this->offset !== null) {
             $sql .= ' OFFSET :_offset';
+        }
+
+        // UNIONs
+        if (!empty($this->union)) {
+            foreach ($this->union as $index => [$query, $all]) {
+                $subSql = $query->buildSql();
+                $subParams = $query->getParams();
+                
+                // Rewrite placeholders in subquery to prevent name collisions
+                $rewrittenSql = $subSql;
+                foreach ($subParams as $paramName => $paramVal) {
+                    $newParamName = $paramName . '_u' . $index;
+                    $rewrittenSql = str_replace($paramName, $newParamName, $rewrittenSql);
+                    $this->params[$newParamName] = $paramVal;
+                }
+                
+                $unionWord = $all ? ' UNION ALL ' : ' UNION ';
+                $sql .= $unionWord . $rewrittenSql;
+            }
         }
 
         return $sql;

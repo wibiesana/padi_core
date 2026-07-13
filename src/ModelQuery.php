@@ -9,13 +9,26 @@ namespace Wibiesana\Padi\Core;
  * Model-aware Query Builder
  * 
  * Extends the base Query builder with ActiveRecord model integration,
- * providing eager loading (with), lifecycle hooks (afterLoad), and
- * field hiding automatically when fetching results.
+ * providing eager loading (with), SQL JOIN via relations (joinWith),
+ * lifecycle hooks (afterLoad), and field hiding automatically when
+ * fetching results.
  * 
  * Usage:
  *   MyModel::find()->with('relation')->orderBy('id DESC')->limit(100)->all();
  *   MyModel::find()->where(['status' => 'active'])->one();
  *   MyModel::find(5); // Find by ID
+ * 
+ * joinWith (Yii2-style SQL JOIN):
+ *   Order::find()
+ *       ->select(['order.*', 'customer.name as customer_name'])
+ *       ->joinWith(['customer c', 'orderItems.product p'])
+ *       ->where(['order.status' => 'completed'])
+ *       ->andWhere(['p.category_id' => [1, 2, 3]])
+ *       ->groupBy(['order.id'])
+ *       ->having(['>', 'COUNT(order_item.id)', 5])
+ *       ->orderBy(['order.total_amount' => SORT_DESC])
+ *       ->limit(10)
+ *       ->all();
  */
 class ModelQuery extends Query
 {
@@ -62,6 +75,156 @@ class ModelQuery extends Query
         }
         $this->withRelations = array_merge($this->withRelations, $flat);
         return $this;
+    }
+
+    /**
+     * Return results as plain arrays (no-op for compatibility).
+     * 
+     * Since Padi always returns results as associative arrays,
+     * this method is provided purely for compatibility with other ORMs.
+     * 
+     * @return $this
+     */
+    public function asArray(): self
+    {
+        return $this;
+    }
+
+    /**
+     * Join with related models via SQL JOIN (Yii2-style).
+     * 
+     * Unlike with() which uses separate queries (eager loading),
+     * joinWith() adds SQL JOIN clauses to the main query, allowing
+     * you to filter, sort, and aggregate across related tables.
+     * 
+     * Supports:
+     * - Simple:    ->joinWith(['customer'])
+     * - Alias:     ->joinWith(['customer c'])
+     * - Nested:    ->joinWith(['orderItems.product'])
+     * - Combined:  ->joinWith(['customer c', 'orderItems.product p'])
+     * - Array:     ->joinWith('customer')  (single string)
+     * 
+     * @param array|string $relations Relation names with optional aliases
+     * @param string $joinType JOIN type: 'LEFT JOIN', 'INNER JOIN', 'RIGHT JOIN'
+     * @return $this
+     * 
+     * @example
+     *   Order::find()
+     *       ->select(['order.*', 'customer.name as customer_name'])
+     *       ->joinWith(['customer c', 'orderItems.product p'])
+     *       ->where(['order.status' => 'completed'])
+     *       ->andWhere(['p.category_id' => [1, 2, 3]])
+     *       ->groupBy(['order.id'])
+     *       ->having('COUNT(order_item.id) > 5')
+     *       ->orderBy(['order.total_amount' => SORT_DESC])
+     *       ->limit(10)
+     *       ->all();
+     */
+    public function joinWith(array|string $relations, string $joinType = 'LEFT JOIN'): self
+    {
+        if (is_string($relations)) {
+            $relations = [$relations];
+        }
+
+        foreach ($relations as $relation) {
+            $this->resolveJoin($relation, $this->model, $joinType);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Resolve a single relation (possibly nested) into SQL JOIN clause(s).
+     */
+    private function resolveJoin(string $relation, ActiveRecord $contextModel, string $joinType): void
+    {
+        // Parse alias: 'customer c' → relationPath='customer', alias='c'
+        $parts = preg_split('/\s+/', trim($relation), 2);
+        $relationPath = $parts[0];
+        $finalAlias = $parts[1] ?? null;
+
+        // Handle nested: 'orderItems.product' → segments=['orderItems', 'product']
+        $segments = explode('.', $relationPath);
+        $currentModel = $contextModel;
+
+        foreach ($segments as $i => $segment) {
+            $isLast = ($i === count($segments) - 1);
+            $alias = $isLast ? $finalAlias : null;
+
+            $config = $currentModel->getRelationConfig($segment);
+            if ($config === null) {
+                throw new \InvalidArgumentException(
+                    "Relation '{$segment}' not found on model " . get_class($currentModel)
+                );
+            }
+
+            $relatedModel = new $config['model']();
+            $relatedTable = $relatedModel->getTable();
+            $currentTable = $currentModel->getTable();
+
+            // Auto-alias joined table to relation name (segment) if no manual alias is provided
+            $tableRef = $alias ?? $segment;
+            $joinTable = $relatedTable;
+            if ($alias !== null || $relatedTable !== $segment) {
+                $joinTable = "{$relatedTable} {$tableRef}";
+            }
+
+            match ($config['type']) {
+                'belongsTo' => $this->join(
+                    $joinType,
+                    $joinTable,
+                    "{$tableRef}.{$config['foreign_key']} = {$currentTable}.{$config['local_key']}"
+                ),
+                'hasMany', 'hasOne' => $this->join(
+                    $joinType,
+                    $joinTable,
+                    "{$tableRef}.{$config['foreign_key']} = {$currentTable}.{$config['local_key']}"
+                ),
+                'belongsToMany' => $this->resolveBelongsToManyJoin(
+                    $config, $currentModel, $relatedModel, $alias ?? $segment, $joinType
+                ),
+            };
+
+            $currentModel = $relatedModel;
+        }
+    }
+
+    /**
+     * Resolve a belongsToMany relation into two JOINs (pivot + related table).
+     */
+    private function resolveBelongsToManyJoin(
+        array $config,
+        ActiveRecord $currentModel,
+        ActiveRecord $relatedModel,
+        ?string $alias,
+        string $joinType
+    ): void {
+        $pivotTable = $config['pivot_table'];
+        $currentTable = $currentModel->getTable();
+        $relatedTable = $relatedModel->getTable();
+        $pk = $currentModel->getPrimaryKeyName();
+        $relatedPk = $relatedModel->getPrimaryKeyName();
+
+        // Auto-alias joined table to relation name if no manual alias is provided
+        $tableRef = $alias ?? $relatedTable;
+        $joinTable = $relatedTable;
+        if ($alias !== null || $relatedTable !== $alias) {
+            $joinTable = "{$relatedTable} {$tableRef}";
+        }
+
+        // JOIN 1: pivot table
+        $this->join(
+            $joinType,
+            $pivotTable,
+            "{$pivotTable}.{$config['foreign_key']} = {$currentTable}.{$pk}"
+        );
+
+        // JOIN 2: related table
+        $this->join(
+            $joinType,
+            $joinTable,
+            "{$tableRef}.{$relatedPk} = {$pivotTable}.{$config['related_key']}"
+        );
     }
 
     /**
@@ -168,5 +331,69 @@ class ModelQuery extends Query
         }
 
         return $results;
+    }
+
+    /**
+     * Batch query results using a PHP Generator.
+     * 
+     * This allows you to process large datasets without exhausting server memory.
+     * 
+     * @param int $size Chunk size
+     * @return \Generator Array of records per chunk
+     * 
+     * @example
+     *   foreach (Order::find()->where(['status' => 'completed'])->batch(100) as $orders) {
+     *       // Process 100 orders
+     *   }
+     */
+    public function batch(int $size = 100): \Generator
+    {
+        $page = 1;
+        while (true) {
+            $oldLimit = $this->limit;
+            $oldOffset = $this->offset;
+
+            $this->limit($size);
+            $this->offset(($page - 1) * $size);
+
+            $rows = $this->all();
+
+            $this->limit = $oldLimit;
+            $this->offset = $oldOffset;
+
+            if (empty($rows)) {
+                break;
+            }
+
+            yield $rows;
+
+            if (count($rows) < $size) {
+                break;
+            }
+
+            $page++;
+        }
+    }
+
+    /**
+     * Iterate over query results one by one using a PHP Generator.
+     * 
+     * This allows you to process large datasets record by record with low memory usage.
+     * 
+     * @param int $size Chunk size to fetch in background (default 100)
+     * @return \Generator Individual records
+     * 
+     * @example
+     *   foreach (Order::find()->each(100) as $order) {
+     *       // Process single order
+     *   }
+     */
+    public function each(int $size = 100): \Generator
+    {
+        foreach ($this->batch($size) as $rows) {
+            foreach ($rows as $row) {
+                yield $row;
+            }
+        }
     }
 }

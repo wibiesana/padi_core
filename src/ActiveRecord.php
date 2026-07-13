@@ -359,6 +359,30 @@ abstract class ActiveRecord
         return $this->with;
     }
 
+    /**
+     * Get relation configuration by name.
+     * 
+     * Used by ModelQuery::joinWith() to resolve relation definitions
+     * into SQL JOIN clauses automatically.
+     * 
+     * @return array|null Relation config or null if relation method doesn't exist
+     */
+    public function getRelationConfig(string $name): ?array
+    {
+        if (method_exists($this, $name)) {
+            return $this->$name();
+        }
+        return null;
+    }
+
+    /**
+     * Get primary key column name(s).
+     */
+    public function getPrimaryKeyName(): string|array
+    {
+        return $this->primaryKey;
+    }
+
     // Relationship helpers
     protected function hasMany(string $model, string $foreignKey, string $localKey = 'id', array $columns = ['*']): array
     {
@@ -524,6 +548,29 @@ abstract class ActiveRecord
     public static function findOne(int|string|array $id, array $columns = ['*']): ?array
     {
         return static::find($id, $columns);
+    }
+
+    /**
+     * Find multiple records by primary key(s) or a set of conditions
+     * 
+     * Supports:
+     *   MyModel::findAll([1, 2, 3]);                  // By primary keys
+     *   MyModel::findAll(['status' => 'active']);     // By conditions
+     */
+    public static function findAll(array $condition, array $columns = ['*']): array
+    {
+        $instance = new static();
+        
+        // Check if the array is a simple list of primary keys (e.g. [1, 2, 3])
+        if (isset($condition[0]) && !is_array($condition[0])) {
+            $pk = $instance->primaryKey;
+            if (is_array($pk)) {
+                throw new \InvalidArgumentException("findAll() with list of IDs is not supported for composite primary keys.");
+            }
+            return static::find()->where([$pk => $condition])->select($columns)->all();
+        }
+
+        return static::find()->where($condition)->select($columns)->all();
     }
 
 
@@ -876,6 +923,41 @@ abstract class ActiveRecord
             Database::logQueryError($e, $sql, $params);
             throw $e;
         }
+    }
+
+    /**
+     * Delete multiple records matching the specified conditions
+     * 
+     * Supports:
+     *   MyModel::deleteAll([1, 2, 3]);                  // By primary keys
+     *   MyModel::deleteAll(['status' => 'inactive']);   // By conditions
+     * 
+     * @param array $conditions Conditions for the WHERE clause or list of primary keys
+     * @return int The number of rows deleted
+     */
+    public static function deleteAll(array $conditions = []): int
+    {
+        $instance = new static();
+        $query = Query::find($instance->connection)->from($instance->table);
+        
+        if (!empty($conditions)) {
+            // Check if the array is a simple list of primary keys (e.g. [1, 2, 3])
+            if (isset($conditions[0]) && !is_array($conditions[0])) {
+                $pk = $instance->primaryKey;
+                if (is_array($pk)) {
+                    throw new \InvalidArgumentException("deleteAll() with list of IDs is not supported for composite primary keys.");
+                }
+                $query->where([$pk => $conditions]);
+            } else {
+                $query->where($conditions);
+            }
+        }
+        
+        $deleted = $query->delete();
+        if ($deleted > 0) {
+            Cache::delete("table_count:{$instance->table}");
+        }
+        return $deleted;
     }
 
     /**

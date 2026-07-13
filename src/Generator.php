@@ -381,8 +381,7 @@ PHP;
     private function getTableSchema(string $tableName): array
     {
         try {
-            $db = Database::getInstance()->getConnection();
-            $stmt = $db->query("DESCRIBE {$tableName}");
+            $stmt = $this->db->query("DESCRIBE {$tableName}");
             $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
             $schema = [];
@@ -474,8 +473,7 @@ PHP;
 
         // Check if singular table exists first, then try plural
         try {
-            $db = Database::getInstance()->getConnection();
-            $stmt = $db->query("SHOW TABLES LIKE '{$table}'");
+            $stmt = $this->db->query("SHOW TABLES LIKE '{$table}'");
             $result = $stmt->fetch();
             if ($result) {
                 return $table; // Singular table exists
