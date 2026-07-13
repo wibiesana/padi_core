@@ -231,7 +231,7 @@ PHP;
         $controllerName = $this->tableNameToModelName($resourceName) . 'Controller';
         $prefix = $options['prefix'] ?? $this->tableNameToRoutePrefix($resourceName);
         $middleware = $options['middleware'] ?? [];
-        $protected = $options['protected'] ?? ['store', 'update', 'destroy'];
+        $protected = $options['protected'] ?? ['index', 'all', 'show', 'store', 'update', 'destroy'];
 
         $routes = $this->getRoutesTemplate($prefix, $controllerName, $middleware, $protected);
 
@@ -1152,34 +1152,50 @@ PHP;
         if (!in_array('AuthMiddleware', $protectedMiddleware)) {
             $protectedMiddleware[] = 'AuthMiddleware';
         }
-
         $protectedMiddlewareStr = empty($protectedMiddleware) ? '' : ", 'middleware' => ['" . implode("', '", $protectedMiddleware) . "']";
 
         // Prepare middleware for public routes (exclude AuthMiddleware)
         $publicMiddleware = array_diff($middleware, ['AuthMiddleware']);
         $publicMiddlewareStr = empty($publicMiddleware) ? '' : ", 'middleware' => ['" . implode("', '", $publicMiddleware) . "']";
 
-        $routes = "// ============================================================================\n";
-        $routes .= "// {$displayName} ROUTES - READ OPERATIONS (PUBLIC)\n";
-        $routes .= "// ============================================================================\n";
-        $routes .= "// Public read access for {$prefix} data\n";
-        $routes .= "\$router->group(['prefix' => '{$prefix}'{$publicMiddlewareStr}], function (\$router) {\n";
-        $routes .= "    // List & view operations\n";
-        $routes .= "    \$router->get('/', '{$controllerName}@index');           // List {$prefix} with pagination\n";
-        $routes .= "    \$router->get('/all', '{$controllerName}@all');         // Get all {$prefix}\n";
-        $routes .= "    \$router->get('/{id}', '{$controllerName}@show');       // Get specific item\n";
-        $routes .= "});\n\n";
+        // Group actions dynamically based on protected array
+        $publicRoutes = [];
+        $protectedRoutes = [];
 
+        $allRoutesList = [
+            'index'   => "    \$router->get('/', '{$controllerName}@index');           // List {$prefix} with pagination\n",
+            'all'     => "    \$router->get('/all', '{$controllerName}@all');         // Get all {$prefix}\n",
+            'show'    => "    \$router->get('/{id}', '{$controllerName}@show');       // Get specific item\n",
+            'store'   => "    \$router->post('/', '{$controllerName}@store');         // Create new item\n",
+            'update'  => "    \$router->put('/{id}', '{$controllerName}@update');     // Update item\n",
+            'destroy' => "    \$router->delete('/{id}', '{$controllerName}@destroy'); // Delete item\n",
+        ];
+
+        foreach ($allRoutesList as $action => $routeLine) {
+            if (in_array($action, $protected, true)) {
+                $protectedRoutes[] = $routeLine;
+            } else {
+                $publicRoutes[] = $routeLine;
+            }
+        }
+
+        $routes = "// ============================================================================\n";
+        $routes .= "// {$displayName} ROUTES\n";
         $routes .= "// ============================================================================\n";
-        $routes .= "// {$displayName} MANAGEMENT ROUTES (PROTECTED)\n";
-        $routes .= "// ============================================================================\n";
-        $routes .= "// Modification operations for {$prefix} - requires authentication\n";
-        $routes .= "\$router->group(['prefix' => '{$prefix}'{$protectedMiddlewareStr}], function (\$router) {\n";
-        $routes .= "    // Modification operations\n";
-        $routes .= "    \$router->post('/', '{$controllerName}@store');         // Create new item\n";
-        $routes .= "    \$router->put('/{id}', '{$controllerName}@update');     // Update item\n";
-        $routes .= "    \$router->delete('/{id}', '{$controllerName}@destroy'); // Delete item\n";
-        $routes .= "});\n";
+
+        if (!empty($publicRoutes)) {
+            $routes .= "// Public operations for {$prefix}\n";
+            $routes .= "\$router->group(['prefix' => '{$prefix}'{$publicMiddlewareStr}], function (\$router) {\n";
+            $routes .= implode("", $publicRoutes);
+            $routes .= "});\n\n";
+        }
+
+        if (!empty($protectedRoutes)) {
+            $routes .= "// Protected operations for {$prefix} - requires authentication\n";
+            $routes .= "\$router->group(['prefix' => '{$prefix}'{$protectedMiddlewareStr}], function (\$router) {\n";
+            $routes .= implode("", $protectedRoutes);
+            $routes .= "});\n";
+        }
         $routes .= "\n";
 
         return $routes;
