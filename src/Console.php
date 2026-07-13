@@ -295,6 +295,22 @@ PHP;
             $options['realtime'] = filter_var($options['realtime'], FILTER_VALIDATE_BOOLEAN) || $options['realtime'] === '';
         }
 
+        if ($options['realtime']) {
+            if (!isset($options['realtime-sync'])) {
+                $syncChoice = self::interactiveChoice(
+                    "Should real-time broadcasts be processed asynchronously via Queue (recommended)?",
+                    [
+                        'no' => 'Yes, use background Queue (asynchronous)',
+                        'yes' => 'No, publish directly (synchronous)'
+                    ],
+                    'no'
+                );
+                $options['realtime_sync'] = ($syncChoice === 'yes');
+            } else {
+                $options['realtime_sync'] = filter_var($options['realtime-sync'], FILTER_VALIDATE_BOOLEAN) || $options['realtime-sync'] === '';
+            }
+        }
+
         $generator = new Generator();
         $generator->generateCrud($tableName, $options);
     }
@@ -317,6 +333,22 @@ PHP;
             $options['realtime'] = ($choice === 'yes');
         } else {
             $options['realtime'] = filter_var($options['realtime'], FILTER_VALIDATE_BOOLEAN) || $options['realtime'] === '';
+        }
+
+        if ($options['realtime']) {
+            if (!isset($options['realtime-sync'])) {
+                $syncChoice = self::interactiveChoice(
+                    "Should real-time broadcasts be processed asynchronously via Queue (recommended)?",
+                    [
+                        'no' => 'Yes, use background Queue (asynchronous)',
+                        'yes' => 'No, publish directly (synchronous)'
+                    ],
+                    'no'
+                );
+                $options['realtime_sync'] = ($syncChoice === 'yes');
+            } else {
+                $options['realtime_sync'] = filter_var($options['realtime-sync'], FILTER_VALIDATE_BOOLEAN) || $options['realtime-sync'] === '';
+            }
         }
 
         echo "\e[33mGenerating CRUD for all tables...\e[0m\n";

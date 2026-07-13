@@ -74,8 +74,8 @@ class Realtime
             "Authorization: Bearer {$token}",
             "Content-Type: application/x-www-form-urlencoded"
         ]);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 1); // Fail fast if host is unreachable
-        curl_setopt($ch, CURLOPT_TIMEOUT, 1);        // Max 1 second execution time
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT_MS, 200); // Connection timeout (0.2s)
+        curl_setopt($ch, CURLOPT_TIMEOUT_MS, 200);        // Execution timeout (0.2s)
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);

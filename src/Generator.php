@@ -279,8 +279,8 @@ PHP;
         echo "\n4. Generating Routes...\n";
         $this->generateRoutes($tableName, $options);
 
-        // Generate Postman Collection
-        echo "\n5. Generating Postman Collection...\n";
+        // Generate API Collection
+        echo "\n5. Generating API Collection...\n";
         $this->generatePostmanCollection($tableName, $options);
 
         echo "\n" . str_repeat('=', 60) . "\n";
@@ -874,10 +874,47 @@ PHP;
         $realtimeImport = '';
 
         if ($options['realtime'] ?? false) {
-            $realtimeImport = "\nuse Wibiesana\\Padi\\Core\\Realtime;";
+            $useQueue = !($options['realtime_sync'] ?? false);
             $resourceName = strtolower($modelName);
-            
-            $realtimeHooks = <<<PHP
+
+            if ($useQueue) {
+                $realtimeImport = "\nuse Wibiesana\\Padi\\Core\\Queue;\nuse App\Jobs\BroadcastRealtimeJob;";
+                $realtimeHooks = <<<PHP
+\n
+    /**
+     * Lifecycle Hook: Called after save (create/update)
+     * Automatically broadcasts changes via background queue.
+     */
+    protected function afterSave(bool \$insert, array \$data): void
+    {
+        \$event = \$insert ? '{$resourceName}_created' : '{$resourceName}_updated';
+        Queue::push(BroadcastRealtimeJob::class, [
+            'topic' => '{$resourceName}s',
+            'data' => [
+                'event' => \$event,
+                'data'  => \$this->toArray()
+            ]
+        ]);
+    }
+
+    /**
+     * Lifecycle Hook: Called after delete
+     * Automatically broadcasts deletion via background queue.
+     */
+    protected function afterDelete(int|string|array \$id): void
+    {
+        Queue::push(BroadcastRealtimeJob::class, [
+            'topic' => '{$resourceName}s',
+            'data' => [
+                'event' => '{$resourceName}_deleted',
+                'id'    => \$id
+            ]
+        ]);
+    }
+PHP;
+            } else {
+                $realtimeImport = "\nuse Wibiesana\\Padi\\Core\\Realtime;";
+                $realtimeHooks = <<<PHP
 \n
     /**
      * Lifecycle Hook: Called after save (create/update)
@@ -888,7 +925,7 @@ PHP;
         \$event = \$insert ? '{$resourceName}_created' : '{$resourceName}_updated';
         Realtime::publish('{$resourceName}s', [
             'event' => \$event,
-            'data' => \$this->toArray()
+            'data'  => \$this->toArray()
         ]);
     }
 
@@ -900,10 +937,11 @@ PHP;
     {
         Realtime::publish('{$resourceName}s', [
             'event' => '{$resourceName}_deleted',
-            'id' => \$id
+            'id'    => \$id
         ]);
     }
 PHP;
+            }
         }
 
         return <<<PHP
@@ -1237,7 +1275,7 @@ PHP;
     }
 
     /**
-     * Generate Postman Collection for REST API
+     * Generate API Client Collection for REST API
      */
     public function generatePostmanCollection(string $tableName, array $options = []): bool
     {
@@ -1429,7 +1467,7 @@ PHP;
     }
 
     /**
-     * Generate sample data for Postman requests
+     * Generate sample data for API client requests
      */
     private function generateSampleData(array $schema): array
     {
