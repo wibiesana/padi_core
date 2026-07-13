@@ -395,60 +395,112 @@ PHP;
     }
 
     /**
-     * Generate validation rules based on table schema
+     * Generate validation rules based on table schema.
+     * Returns ['store' => [...], 'update' => [...]] where:
+     *   - store  rules use 'required' for non-nullable columns without defaults
+     *   - update rules replace 'required' with 'sometimes' (safe for partial PUT/PATCH)
      */
     private function generateValidationRules(array $schema, string $tableName): array
     {
-        $rules = [];
-        $pks = $this->detectPrimaryKey($tableName);
+        $storeRules  = [];
+        $updateRules = [];
+
+        $pks    = $this->detectPrimaryKey($tableName);
         $pkList = is_array($pks) ? $pks : [$pks];
-        $exclude = array_merge(['created_at', 'updated_at', 'deleted_at'], $pkList);
+        $exclude = array_merge(['created_at', 'updated_at', 'deleted_at', 'created_by', 'updated_by'], $pkList);
 
         foreach ($schema as $column => $info) {
             if (in_array($column, $exclude)) continue;
             if (strpos($info['Extra'] ?? '', 'auto_increment') !== false) continue;
 
-            $columnRules = [];
+            $storeColumnRules  = [];
+            $updateColumnRules = [];
 
-            // Required? (Not nullable and no default, but allow if it has a default value)
             $isNullable = ($info['Null'] ?? 'YES') === 'YES';
             $hasDefault = ($info['Default'] ?? null) !== null;
 
+            // ── Presence ──────────────────────────────────────────────────
             if (!$isNullable && !$hasDefault) {
-                $columnRules[] = 'required';
+                $storeColumnRules[]  = 'required';
+                $updateColumnRules[] = 'sometimes'; // partial update safe
+            } else {
+                // nullable column — still validate when present on update
+                $updateColumnRules[] = 'sometimes';
+                if ($isNullable) {
+                    $storeColumnRules[]  = 'nullable';
+                    $updateColumnRules[] = 'nullable';
+                }
             }
 
-            // Type rules
+            // ── Type ──────────────────────────────────────────────────────
             $type = strtolower($info['Type'] ?? '');
-            if (strpos($type, 'int') !== false) {
-                $columnRules[] = 'integer';
+
+            if ($type === 'tinyint(1)') {
+                // Boolean flag columns
+                $storeColumnRules[]  = 'boolean';
+                $updateColumnRules[] = 'boolean';
+            } elseif (strpos($type, 'int') !== false) {
+                $storeColumnRules[]  = 'integer';
+                $updateColumnRules[] = 'integer';
             } elseif (strpos($type, 'decimal') !== false || strpos($type, 'float') !== false || strpos($type, 'double') !== false) {
-                $columnRules[] = 'numeric';
-            } elseif (strpos($type, 'varchar') !== false || strpos($type, 'char') !== false || strpos($type, 'text') !== false) {
-                $columnRules[] = 'string';
+                $storeColumnRules[]  = 'numeric';
+                $updateColumnRules[] = 'numeric';
+            } elseif (strpos($type, 'varchar') !== false || strpos($type, 'char') !== false) {
+                $storeColumnRules[]  = 'string';
+                $updateColumnRules[] = 'string';
+            } elseif (strpos($type, 'text') !== false) {
+                // text/longtext — no max length constraint
+                $storeColumnRules[]  = 'string';
+                $updateColumnRules[] = 'string';
+            } elseif (strpos($type, 'datetime') !== false || strpos($type, 'timestamp') !== false) {
+                $storeColumnRules[]  = 'date_format:Y-m-d H:i:s';
+                $updateColumnRules[] = 'date_format:Y-m-d H:i:s';
+            } elseif (strpos($type, 'date') !== false) {
+                $storeColumnRules[]  = 'date_format:Y-m-d';
+                $updateColumnRules[] = 'date_format:Y-m-d';
+            } elseif (strpos($type, 'json') !== false) {
+                $storeColumnRules[]  = 'json';
+                $updateColumnRules[] = 'json';
             }
 
-            // Max length for varchar
-            if (preg_match('/varchar\((\d+)\)/', $type, $matches)) {
-                $columnRules[] = 'max:' . $matches[1];
+            // ── Max length for varchar/char ────────────────────────────────
+            if (preg_match('/(varchar|char)\((\d+)\)/', $type, $matches)) {
+                $storeColumnRules[]  = 'max:' . $matches[2];
+                $updateColumnRules[] = 'max:' . $matches[2];
             }
 
-            // Email check
-            if (strpos(strtolower($column), 'email') !== false) {
-                $columnRules[] = 'email';
+            // ── Semantic checks ───────────────────────────────────────────
+            if (str_contains(strtolower($column), 'email')) {
+                $storeColumnRules[]  = 'email';
+                $updateColumnRules[] = 'email';
             }
 
-            // Unique check
+            if (str_contains(strtolower($column), 'url') || str_contains(strtolower($column), 'website')) {
+                $storeColumnRules[]  = 'url';
+                $updateColumnRules[] = 'url';
+            }
+
+            if (str_contains(strtolower($column), 'uuid')) {
+                $storeColumnRules[]  = 'uuid';
+                $updateColumnRules[] = 'uuid';
+            }
+
+            // ── Unique key ────────────────────────────────────────────────
             if (($info['Key'] ?? '') === 'UNI') {
-                $columnRules[] = "unique:{$tableName},{$column}";
+                $storeColumnRules[]  = "unique:{$tableName},{$column}";
+                // Update: unique ignores the current record's id (appended at runtime)
+                $updateColumnRules[] = "unique:{$tableName},{$column}";
             }
 
-            if (!empty($columnRules)) {
-                $rules[$column] = implode('|', $columnRules);
+            if (!empty($storeColumnRules)) {
+                $storeRules[$column]  = implode('|', $storeColumnRules);
+            }
+            if (!empty($updateColumnRules)) {
+                $updateRules[$column] = implode('|', $updateColumnRules);
             }
         }
 
-        return $rules;
+        return ['store' => $storeRules, 'update' => $updateRules];
     }
 
     /**
@@ -851,21 +903,24 @@ PHP;
         $tableName = $this->modelNameToTableName($modelName); // Infer table name
         $resourceName = strtolower($modelName);
 
-        $storeRules = "";
-        $updateRules = "";
+        $storeRulesStr  = "";
+        $updateRulesStr = "";
 
-        foreach ($validationRules as $column => $rule) {
-            $storeRules .= "            '{$column}' => '{$rule}',\n";
-            // For update, unique rules need to ignore current ID
-            if (strpos($rule, 'unique:') !== false) {
-                $updateRules .= "            '{$column}' => '{$rule},' . \$id,\n";
+        // $validationRules is now ['store'=>[...], 'update'=>[...]]
+        foreach ($validationRules['store'] ?? [] as $column => $rule) {
+            $storeRulesStr .= "            '{$column}' => '{$rule}',\n";
+        }
+        foreach ($validationRules['update'] ?? [] as $column => $rule) {
+            // Unique rule on update must ignore the current record's ID
+            if (str_contains($rule, 'unique:')) {
+                $updateRulesStr .= "            '{$column}' => '{$rule},' . \$id,\n";
             } else {
-                $updateRules .= "            '{$column}' => '{$rule}',\n";
+                $updateRulesStr .= "            '{$column}' => '{$rule}',\n";
             }
         }
 
-        $storeRules = rtrim($storeRules, ",\n");
-        $updateRules = rtrim($updateRules, ",\n");
+        $storeRules  = rtrim($storeRulesStr,  ",\n");
+        $updateRules = rtrim($updateRulesStr, ",\n");
 
         // Autodetect relations for index eager loading via Real Foreign Keys
         $withRelations = [];

@@ -6,10 +6,15 @@ namespace Wibiesana\Padi\Core;
 
 /**
  * Validator - Input Validation Engine
- * 
- * Supports rules: required, email, min, max, numeric, integer, alpha,
- * alphanumeric, url, in, unique, confirmed, date, boolean, array, regex
- * 
+ *
+ * Supported rules:
+ *   required, sometimes, required_if, required_with, required_without,
+ *   string, numeric, integer, boolean, array, json, uuid,
+ *   email, url, date, date_format, before, after,
+ *   alpha, alpha_dash, alphanumeric, regex,
+ *   min, max, between, size, in, not_in,
+ *   exists, unique, confirmed, nullable
+ *
  * Security:
  * - Table/column names validated against injection
  * - No dynamic SQL without parameterization
@@ -37,6 +42,11 @@ class Validator
         foreach ($this->rules as $field => $rules) {
             $rulesList = is_string($rules) ? explode('|', $rules) : $rules;
 
+            // Handle 'sometimes' — skip entire field if not present in input
+            if (in_array('sometimes', $rulesList, true) && !array_key_exists($field, $this->data)) {
+                continue;
+            }
+
             foreach ($rulesList as $rule) {
                 $this->validateField($field, $rule);
             }
@@ -59,24 +69,52 @@ class Validator
         $value = $this->data[$field] ?? null;
 
         match ($ruleName) {
-            'required' => $this->validateRequired($field, $value),
-            'email' => $this->validateEmail($field, $value),
-            'min' => $this->validateMin($field, $value, (int)$ruleValue),
-            'max' => $this->validateMax($field, $value, (int)$ruleValue),
-            'numeric' => $this->validateNumeric($field, $value),
-            'integer' => $this->validateInteger($field, $value),
-            'alpha' => $this->validateAlpha($field, $value),
+            // Presence & conditional
+            'required'         => $this->validateRequired($field, $value),
+            'required_if'      => $this->validateRequiredIf($field, $value, $ruleValue),
+            'required_with'    => $this->validateRequiredWith($field, $value, $ruleValue),
+            'required_without' => $this->validateRequiredWithout($field, $value, $ruleValue),
+            'sometimes'        => null, // Handled in validate() loop
+            'nullable'         => null, // Skip — allows null values
+
+            // Type
+            'string'       => $this->validateString($field, $value),
+            'numeric'      => $this->validateNumeric($field, $value),
+            'integer'      => $this->validateInteger($field, $value),
+            'boolean'      => $this->validateBoolean($field, $value),
+            'array'        => $this->validateArray($field, $value),
+            'json'         => $this->validateJson($field, $value),
+
+            // Format
+            'email'        => $this->validateEmail($field, $value),
+            'url'          => $this->validateUrl($field, $value),
+            'uuid'         => $this->validateUuid($field, $value),
+            'date'         => $this->validateDate($field, $value),
+            'date_format'  => $this->validateDateFormat($field, $value, $ruleValue),
+            'before'       => $this->validateBefore($field, $value, $ruleValue),
+            'after'        => $this->validateAfter($field, $value, $ruleValue),
+
+            // Character
+            'alpha'        => $this->validateAlpha($field, $value),
+            'alpha_dash'   => $this->validateAlphaDash($field, $value),
             'alphanumeric' => $this->validateAlphanumeric($field, $value),
-            'url' => $this->validateUrl($field, $value),
-            'in' => $this->validateIn($field, $value, $ruleValue),
-            'exists' => $this->validateExists($field, $value, $ruleValue),
-            'unique' => $this->validateUnique($field, $value, $ruleValue),
+            'regex'        => $this->validateRegex($field, $value, $ruleValue),
+
+            // Size
+            'min'     => $this->validateMin($field, $value, (int)$ruleValue),
+            'max'     => $this->validateMax($field, $value, (int)$ruleValue),
+            'between' => $this->validateBetween($field, $value, $ruleValue),
+            'size'    => $this->validateSize($field, $value, (int)$ruleValue),
+
+            // Set
+            'in'     => $this->validateIn($field, $value, $ruleValue),
+            'not_in' => $this->validateNotIn($field, $value, $ruleValue),
+
+            // Database
+            'exists'    => $this->validateExists($field, $value, $ruleValue),
+            'unique'    => $this->validateUnique($field, $value, $ruleValue),
             'confirmed' => $this->validateConfirmed($field, $value),
-            'date' => $this->validateDate($field, $value),
-            'boolean' => $this->validateBoolean($field, $value),
-            'array' => $this->validateArray($field, $value),
-            'regex' => $this->validateRegex($field, $value, $ruleValue),
-            'nullable' => null, // Skip - allows null values
+
             default => null, // Unknown rules are silently ignored
         };
     }
@@ -87,6 +125,50 @@ class Validator
             $this->addError($field, 'required', 'The {field} field is required');
         } elseif (is_string($value) && trim($value) === '') {
             $this->addError($field, 'required', 'The {field} field is required');
+        }
+    }
+
+    private function validateRequiredIf(string $field, mixed $value, ?string $ruleValue): void
+    {
+        if ($ruleValue === null) return;
+        $params = explode(',', $ruleValue, 2);
+        $otherField = $params[0] ?? '';
+        $otherValue = $params[1] ?? '';
+
+        if (array_key_exists($otherField, $this->data) && (string)($this->data[$otherField] ?? '') === $otherValue) {
+            $this->validateRequired($field, $value);
+        }
+    }
+
+    private function validateRequiredWith(string $field, mixed $value, ?string $ruleValue): void
+    {
+        if ($ruleValue === null) return;
+        foreach (explode(',', $ruleValue) as $otherField) {
+            $otherField = trim($otherField);
+            if (array_key_exists($otherField, $this->data) && !$this->isEmpty($this->data[$otherField])) {
+                $this->validateRequired($field, $value);
+                return;
+            }
+        }
+    }
+
+    private function validateRequiredWithout(string $field, mixed $value, ?string $ruleValue): void
+    {
+        if ($ruleValue === null) return;
+        foreach (explode(',', $ruleValue) as $otherField) {
+            $otherField = trim($otherField);
+            if (!array_key_exists($otherField, $this->data) || $this->isEmpty($this->data[$otherField])) {
+                $this->validateRequired($field, $value);
+                return;
+            }
+        }
+    }
+
+    private function validateString(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!is_string($value)) {
+            $this->addError($field, 'string', 'The {field} must be a string');
         }
     }
 
@@ -230,6 +312,100 @@ class Validator
         if ($this->isEmpty($value) || $pattern === null) return;
         if (!preg_match($pattern, (string)$value)) {
             $this->addError($field, 'regex', 'The {field} format is invalid');
+        }
+    }
+
+    private function validateNotIn(string $field, mixed $value, ?string $ruleValue): void
+    {
+        if ($this->isEmpty($value) || $ruleValue === null) return;
+        $disallowed = explode(',', $ruleValue);
+        if (in_array((string)$value, $disallowed, true)) {
+            $this->addError($field, 'not_in', 'The selected {field} is invalid');
+        }
+    }
+
+    private function validateBetween(string $field, mixed $value, ?string $ruleValue): void
+    {
+        if ($this->isEmpty($value) || $ruleValue === null) return;
+        [$min, $max] = array_pad(explode(',', $ruleValue, 2), 2, '0');
+        $min = (int)$min;
+        $max = (int)$max;
+
+        $size = is_array($value) ? count($value)
+            : (is_numeric($value) ? (float)$value : mb_strlen((string)$value));
+
+        if ($size < $min || $size > $max) {
+            $this->addError($field, 'between', "The {field} must be between {$min} and {$max}");
+        }
+    }
+
+    private function validateSize(string $field, mixed $value, int $size): void
+    {
+        if ($this->isEmpty($value)) return;
+
+        $actual = is_array($value) ? count($value)
+            : (is_numeric($value) ? (float)$value : mb_strlen((string)$value));
+
+        if ((float)$actual !== (float)$size) {
+            $this->addError($field, 'size', "The {field} must be exactly {$size}");
+        }
+    }
+
+    private function validateDateFormat(string $field, mixed $value, ?string $format): void
+    {
+        if ($this->isEmpty($value) || $format === null) return;
+        $date = \DateTimeImmutable::createFromFormat($format, (string)$value);
+        if (!$date || $date->format($format) !== (string)$value) {
+            $this->addError($field, 'date_format', "The {field} does not match the format {$format}");
+        }
+    }
+
+    private function validateBefore(string $field, mixed $value, ?string $date): void
+    {
+        if ($this->isEmpty($value) || $date === null) return;
+        $fieldTime = strtotime((string)$value);
+        $compareTime = strtotime($date);
+        if ($fieldTime === false || $compareTime === false || $fieldTime >= $compareTime) {
+            $this->addError($field, 'before', "The {field} must be a date before {$date}");
+        }
+    }
+
+    private function validateAfter(string $field, mixed $value, ?string $date): void
+    {
+        if ($this->isEmpty($value) || $date === null) return;
+        $fieldTime = strtotime((string)$value);
+        $compareTime = strtotime($date);
+        if ($fieldTime === false || $compareTime === false || $fieldTime <= $compareTime) {
+            $this->addError($field, 'after', "The {field} must be a date after {$date}");
+        }
+    }
+
+    private function validateJson(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!is_string($value)) {
+            $this->addError($field, 'json', 'The {field} must be a valid JSON string');
+            return;
+        }
+        json_decode($value);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            $this->addError($field, 'json', 'The {field} must be a valid JSON string');
+        }
+    }
+
+    private function validateUuid(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', (string)$value)) {
+            $this->addError($field, 'uuid', 'The {field} must be a valid UUID');
+        }
+    }
+
+    private function validateAlphaDash(string $field, mixed $value): void
+    {
+        if ($this->isEmpty($value)) return;
+        if (!preg_match('/^[a-zA-Z0-9_-]+$/', (string)$value)) {
+            $this->addError($field, 'alpha_dash', 'The {field} must only contain letters, numbers, dashes, and underscores');
         }
     }
 
