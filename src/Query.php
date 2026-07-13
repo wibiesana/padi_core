@@ -22,7 +22,7 @@ use PDO;
  */
 class Query
 {
-    public const VERSION = '2.0.13';
+    public const VERSION = '2.1.0';
 
     protected ?PDO $db = null;
     protected ?string $connectionName = null;
