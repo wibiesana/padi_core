@@ -82,7 +82,7 @@ class Generator
         // 2. Generate Concrete Model (Only if not exists)
         $concreteFilePath = $this->baseDir . '/app/Models/' . $modelName . '.php';
         if (!file_exists($concreteFilePath) || ($options['force'] ?? false)) {
-            $concreteModelTemplate = $this->getConcreteModelTemplate($modelName, $namespace);
+            $concreteModelTemplate = $this->getConcreteModelTemplate($modelName, $namespace, $options);
             file_put_contents($concreteFilePath, $concreteModelTemplate);
             echo "✓ Concrete Model {$modelName} created at {$concreteFilePath}\n";
         } else {
@@ -868,21 +868,57 @@ PHP;
     /**
      * Get Concrete Model template
      */
-    private function getConcreteModelTemplate(string $modelName, string $namespace): string
+    private function getConcreteModelTemplate(string $modelName, string $namespace, array $options = []): string
     {
+        $realtimeHooks = '';
+        $realtimeImport = '';
+
+        if ($options['realtime'] ?? false) {
+            $realtimeImport = "\nuse Wibiesana\\Padi\\Core\\Realtime;";
+            $resourceName = strtolower($modelName);
+            
+            $realtimeHooks = <<<PHP
+\n
+    /**
+     * Lifecycle Hook: Called after save (create/update)
+     * Automatically broadcasts changes via Mercure real-time hub.
+     */
+    protected function afterSave(bool \$insert, array \$data): void
+    {
+        \$event = \$insert ? '{$resourceName}_created' : '{$resourceName}_updated';
+        Realtime::publish('{$resourceName}s', [
+            'event' => \$event,
+            'data' => \$this->toArray()
+        ]);
+    }
+
+    /**
+     * Lifecycle Hook: Called after delete
+     * Automatically broadcasts deletion via Mercure real-time hub.
+     */
+    protected function afterDelete(int|string|array \$id): void
+    {
+        Realtime::publish('{$resourceName}s', [
+            'event' => '{$resourceName}_deleted',
+            'id' => \$id
+        ]);
+    }
+PHP;
+        }
+
         return <<<PHP
 <?php
 
 namespace {$namespace};
 
-use {$namespace}\Base\\{$modelName} as Base{$modelName};
+use {$namespace}\Base\\{$modelName} as Base{$modelName};{$realtimeImport}
 
 class {$modelName} extends Base{$modelName}
 {
     /**
      * Override methods here to add custom logic.
      * Use beforeSave(), afterSave(), etc. for lifecycle hooks.
-     */
+     */{$realtimeHooks}
 }
 PHP;
     }

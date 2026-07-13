@@ -277,18 +277,50 @@ PHP;
             return;
         }
 
+        $options = $this->getOptions();
+        
+        // Interactive prompt for realtime if not explicitly passed via cli option (e.g. --realtime)
+        if (!isset($options['realtime'])) {
+            $choice = self::interactiveChoice(
+                "Do you want to enable real-time SSE broadcasting (Mercure) for this CRUD?",
+                [
+                    'yes' => 'Yes, generate with real-time ORM hooks',
+                    'no' => 'No, standard CRUD only'
+                ],
+                'no'
+            );
+            $options['realtime'] = ($choice === 'yes');
+        } else {
+            // Normalize CLI option --realtime (e.g. --realtime=true, --realtime=1, or just --realtime)
+            $options['realtime'] = filter_var($options['realtime'], FILTER_VALIDATE_BOOLEAN) || $options['realtime'] === '';
+        }
+
         $generator = new Generator();
-        $generator->generateCrud($tableName, $this->getOptions());
+        $generator->generateCrud($tableName, $options);
     }
 
     private function generateCrudAll(): void
     {
-        echo "\e[33mGenerating CRUD for all tables...\e[0m\n";
-        $generator = new Generator();
-
         $options = $this->getOptions();
         $options['write'] = $options['write'] ?? true; // Default to writing routes for bulk generation
 
+        // Interactive prompt for realtime if not explicitly passed
+        if (!isset($options['realtime'])) {
+            $choice = self::interactiveChoice(
+                "Do you want to enable real-time SSE broadcasting (Mercure) for ALL generated tables?",
+                [
+                    'yes' => 'Yes, generate with real-time ORM hooks',
+                    'no' => 'No, standard CRUD only'
+                ],
+                'no'
+            );
+            $options['realtime'] = ($choice === 'yes');
+        } else {
+            $options['realtime'] = filter_var($options['realtime'], FILTER_VALIDATE_BOOLEAN) || $options['realtime'] === '';
+        }
+
+        echo "\e[33mGenerating CRUD for all tables...\e[0m\n";
+        $generator = new Generator();
         $generator->generateCrudAll($options);
         echo "\e[32m✓ Bulk CRUD generation completed!\e[0m\n";
     }
