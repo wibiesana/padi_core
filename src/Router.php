@@ -201,7 +201,7 @@ class Router
                 } catch (TerminateException $e) {
                     // Response was intentionally terminated (e.g., json() called)
                     return;
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     $this->handleException($e, $request);
                 }
                 return;
@@ -275,7 +275,7 @@ class Router
     /**
      * Handle controller/middleware exceptions
      */
-    private function handleException(\Exception $e, Request $request): void
+    private function handleException(\Throwable $e, Request $request): void
     {
         $response = new Response();
         $statusCode = $e->getCode();

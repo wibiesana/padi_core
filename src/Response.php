@@ -55,15 +55,27 @@ class Response
             $data = $this->appendDebugInfo($data);
         }
 
-        // JSON encode flags
-        $jsonFlags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+        // JSON encode flags — throw on encode failure to prevent silent empty responses
+        $jsonFlags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR;
 
         // Only use PRETTY_PRINT in development (saves bandwidth in production)
         if ($isDev) {
             $jsonFlags |= JSON_PRETTY_PRINT;
         }
 
-        $jsonOutput = ($statusCode !== 204) ? json_encode($data, $jsonFlags) : '';
+        try {
+            $jsonOutput = ($statusCode !== 204) ? json_encode($data, $jsonFlags) : '';
+        } catch (\JsonException $e) {
+            // Fallback: encode error response if data is not serializable
+            error_log("Response::json - json_encode failed: " . $e->getMessage());
+            $jsonOutput = json_encode([
+                'success'      => false,
+                'message'      => 'Response encoding error',
+                'message_code' => 'ENCODING_ERROR',
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $statusCode = 500;
+            $this->status($statusCode);
+        }
 
         // GZip compression for responses > 1KB
         $useCompression = !headers_sent()

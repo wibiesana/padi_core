@@ -133,7 +133,15 @@ class Application
             $error['message_code'] = 'DATABASE_ERROR';
             DatabaseManager::logError($exception);
         } else {
-            $error['message'] = $exception->getMessage();
+            // In production, only expose user-facing 4xx error messages.
+            // 5xx errors use a generic message to avoid leaking internal details.
+            $isDebug = $this->config['app_debug'] ?? false;
+            $isUserFacing = ($statusCode >= 400 && $statusCode < 500);
+
+            if ($isDebug || $isUserFacing) {
+                $error['message'] = $exception->getMessage();
+            }
+
             $error['message_code'] = 'EXCEPTION';
         }
 

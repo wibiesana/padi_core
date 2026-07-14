@@ -200,9 +200,6 @@ abstract class ActiveRecord
     /**
      * Load relations for result set
      */
-    /**
-     * Load relations for result set
-     */
     public function loadRelations(array &$results): void
     {
         if (empty($results)) return;
@@ -693,8 +690,10 @@ abstract class ActiveRecord
 
             $id = $this->db->lastInsertId();
 
-            // Add ID to data for afterSave
-            $data[$this->primaryKey] = $id;
+            // Add ID to data for afterSave (only for non-composite primary keys)
+            if (is_string($this->primaryKey)) {
+                $data[$this->primaryKey] = $id;
+            }
             $this->afterSave(true, $data);
 
             // Invalidate cache

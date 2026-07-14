@@ -183,7 +183,16 @@ class Validator
     private function validateMin(string $field, mixed $value, int $minLength): void
     {
         if ($this->isEmpty($value)) return;
-        if (is_string($value) && mb_strlen($value) < $minLength) {
+
+        if (is_numeric($value)) {
+            if ((float)$value < $minLength) {
+                $this->addError($field, 'min', "The {field} must be at least {$minLength}");
+            }
+        } elseif (is_array($value)) {
+            if (count($value) < $minLength) {
+                $this->addError($field, 'min', "The {field} must have at least {$minLength} items");
+            }
+        } elseif (is_string($value) && mb_strlen($value) < $minLength) {
             $this->addError($field, 'min', "The {field} must be at least {$minLength} characters");
         }
     }
@@ -191,7 +200,16 @@ class Validator
     private function validateMax(string $field, mixed $value, int $maxLength): void
     {
         if ($this->isEmpty($value)) return;
-        if (is_string($value) && mb_strlen($value) > $maxLength) {
+
+        if (is_numeric($value)) {
+            if ((float)$value > $maxLength) {
+                $this->addError($field, 'max', "The {field} must not exceed {$maxLength}");
+            }
+        } elseif (is_array($value)) {
+            if (count($value) > $maxLength) {
+                $this->addError($field, 'max', "The {field} must not have more than {$maxLength} items");
+            }
+        } elseif (is_string($value) && mb_strlen($value) > $maxLength) {
             $this->addError($field, 'max', "The {field} must not exceed {$maxLength} characters");
         }
     }
