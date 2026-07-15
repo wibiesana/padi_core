@@ -99,7 +99,7 @@ class Queue
         self::initTable();
         $db          = Database::connection();
         $maxAttempts = (int)Env::get('QUEUE_MAX_ATTEMPTS', '3');
-        $sleepSeconds = (int)Env::get('QUEUE_SLEEP', '3');
+        $sleepSeconds = max(0.01, (float)Env::get('QUEUE_SLEEP', '3.0'));
         $gcInterval  = max(1, (int)Env::get('QUEUE_GC_INTERVAL', '100'));
         $maxJobs     = max(0, (int)Env::get('QUEUE_MAX_JOBS', '1000'));
 
@@ -159,7 +159,11 @@ class Queue
                     }
                 } else {
                     $db->rollBack();
-                    sleep($sleepSeconds);
+                    if ($sleepSeconds < 1.0) {
+                        usleep((int)($sleepSeconds * 1000000));
+                    } else {
+                        sleep((int)$sleepSeconds);
+                    }
                 }
             } catch (\Throwable $e) {
                 // Ensure transaction is rolled back on any error
@@ -167,7 +171,11 @@ class Queue
                     $db->rollBack();
                 }
                 Logger::error("Queue worker error: " . $e->getMessage());
-                sleep($sleepSeconds);
+                if ($sleepSeconds < 1.0) {
+                    usleep((int)($sleepSeconds * 1000000));
+                } else {
+                    sleep((int)$sleepSeconds);
+                }
             }
         }
     }
