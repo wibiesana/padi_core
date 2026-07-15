@@ -143,7 +143,7 @@ class DatabaseManager
         $options = $config['options'] ?? self::getDefaultOptions();
 
         // MySQL/MariaDB specific optimizations
-        $options[PDO::MYSQL_ATTR_FOUND_ROWS] = true;
+        $options[\Pdo\Mysql::ATTR_FOUND_ROWS] = true;
         $options[PDO::ATTR_TIMEOUT] = $config['timeout'] ?? 5;
 
         // Use persistent connections in worker mode (connection reuse)
@@ -157,8 +157,8 @@ class DatabaseManager
         $waitTimeout = (int)($config['wait_timeout'] ?? 28800);
         $pdo->exec(
             "SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', " .
-            "SESSION wait_timeout = {$waitTimeout}, " .
-            "SESSION interactive_timeout = {$waitTimeout}"
+                "SESSION wait_timeout = {$waitTimeout}, " .
+                "SESSION interactive_timeout = {$waitTimeout}"
         );
 
         return $pdo;

@@ -80,7 +80,6 @@ class Realtime
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = curl_error($ch);
-        curl_close($ch);
 
         if ($error) {
             Logger::error("Mercure publish cURL error: " . $error);
@@ -114,7 +113,7 @@ class Realtime
     public static function generateSubscriberJwt(array $topics = ['*']): string
     {
         $secret = Env::get('MERCURE_SUBSCRIBER_JWT_KEY', 'padi_mercure_subscriber_secret_key_change_me_in_prod');
-        
+
         $jwtPayload = [
             'mercure' => [
                 'subscribe' => $topics

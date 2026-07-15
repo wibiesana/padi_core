@@ -857,7 +857,7 @@ PHP;
             'topic' => '{$resourceName}s',
             'data' => [
                 'event' => \$event,
-                'data'  => \$this->toArray()
+                'data'  => \$data
             ]
         ]);
     }
@@ -890,7 +890,7 @@ PHP;
         \$event = \$insert ? '{$resourceName}_created' : '{$resourceName}_updated';
         Realtime::publish('{$resourceName}s', [
             'event' => \$event,
-            'data'  => \$this->toArray()
+            'data'  => \$data
         ]);
     }
 
