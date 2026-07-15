@@ -23,6 +23,11 @@ class Generator
         'migrations'
     ];
 
+    private array $tablesCache = [];
+    private array $schemaCache = [];
+    private array $foreignKeysCache = [];
+    private array $columnUniqueCache = [];
+
     public function __construct()
     {
         $this->baseDir = defined('PADI_ROOT') ? PADI_ROOT : dirname(__DIR__, 4);
@@ -71,7 +76,7 @@ class Generator
         $primaryKey = $this->detectPrimaryKey($tableName);
 
         // 1. Generate Base Model (Always overwrite)
-        $baseModelTemplate = $this->getBaseModelTemplate($modelName, $tableName, $fillable, $hidden, $namespace . '\\Base', $primaryKey);
+        $baseModelTemplate = $this->getBaseModelTemplate($modelName, $tableName, $fillable, $hidden, $namespace . '\\Base', $primaryKey, $options);
         $baseDir = $this->baseDir . '/app/Models/Base';
         if (!is_dir($baseDir)) mkdir($baseDir, 0755, true);
 
@@ -380,6 +385,9 @@ PHP;
      */
     private function getTableSchema(string $tableName): array
     {
+        if (isset($this->schemaCache[$tableName])) {
+            return $this->schemaCache[$tableName];
+        }
         try {
             $stmt = $this->db->query("DESCRIBE {$tableName}");
             $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
@@ -388,6 +396,7 @@ PHP;
             foreach ($rows as $row) {
                 $schema[$row['Field']] = $row;
             }
+            $this->schemaCache[$tableName] = $schema;
             return $schema;
         } catch (\Exception $e) {
             return [];
@@ -581,6 +590,9 @@ PHP;
      */
     private function getTableForeignKeys(string $tableName): array
     {
+        if (isset($this->foreignKeysCache[$tableName])) {
+            return $this->foreignKeysCache[$tableName];
+        }
         $sql = "
             SELECT 
                 COLUMN_NAME, 
@@ -594,7 +606,8 @@ PHP;
 
         $stmt = $this->db->prepare($sql);
         $stmt->execute(['table' => $tableName]);
-        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        $this->foreignKeysCache[$tableName] = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        return $this->foreignKeysCache[$tableName];
     }
 
     /**
@@ -651,9 +664,13 @@ PHP;
      */
     private function getAllTables(): array
     {
+        if (!empty($this->tablesCache)) {
+            return $this->tablesCache;
+        }
         try {
             $stmt = $this->db->query("SHOW TABLES");
-            return $stmt->fetchAll(\PDO::FETCH_COLUMN);
+            $this->tablesCache = $stmt->fetchAll(\PDO::FETCH_COLUMN);
+            return $this->tablesCache;
         } catch (\Exception $e) {
             return [];
         }
@@ -664,10 +681,16 @@ PHP;
      */
     private function isColumnUnique(string $tableName, string $column): bool
     {
+        $cacheKey = "{$tableName}.{$column}";
+        if (isset($this->columnUniqueCache[$cacheKey])) {
+            return $this->columnUniqueCache[$cacheKey];
+        }
         try {
             $stmt = $this->db->prepare("SHOW INDEX FROM {$tableName} WHERE Column_name = :column AND Non_unique = 0");
             $stmt->execute(['column' => $column]);
-            return (bool)$stmt->fetch();
+            $res = (bool)$stmt->fetch();
+            $this->columnUniqueCache[$cacheKey] = $res;
+            return $res;
         } catch (\Exception $e) {
             return false;
         }
@@ -706,7 +729,7 @@ PHP;
     /**
      * Get Base Model template
      */
-    private function getBaseModelTemplate(string $modelName, string $tableName, array $fillable, array $hidden, string $namespace, string|array $primaryKey = 'id'): string
+    private function getBaseModelTemplate(string $modelName, string $tableName, array $fillable, array $hidden, string $namespace, string|array $primaryKey = 'id', array $options = []): string
     {
         $fillableStr = "'" . implode("', '", $fillable) . "'";
         $hiddenStr = empty($hidden) ? '' : "'" . implode("', '", $hidden) . "'";
@@ -811,65 +834,7 @@ PHP;
 
         $pkStr = is_array($primaryKey) ? "['" . implode("', '", $primaryKey) . "']" : "'$primaryKey'";
 
-        return <<<PHP
-<?php
-
-namespace {$namespace};
-
-use Wibiesana\Padi\Core\ActiveRecord;
-use Wibiesana\Padi\Core\ModelQuery;
-
-class {$modelName} extends ActiveRecord
-{
-    protected string \$table = '{$tableName}';
-    protected string|array \$primaryKey = {$pkStr};
-    
-    protected array \$fillable = [
-        {$fillableStr}
-    ];
-    
-    protected array \$hidden = [{$hiddenStr}];
-{$auditConfig}
-{$relationsStr}
-    /**
-     * Build global search conditions
-     * Searches all fillable fields + related table display columns
-     */
-    protected function buildSearchConditions(string \$keyword): array
-    {
-        \$conditions = ['OR'];
-
-        // Search all fillable fields from this table
-        foreach (\$this->fillable as \$field) {
-            \$conditions[] = ["{\$this->table}.{\$field}", 'LIKE', \$keyword];
-        }
-{$relationSearchFieldsStr}
-
-        return \$conditions;
-    }
-
-    /**
-     * Start a model-aware search query builder
-     */
-    public static function search(string \$keyword): ModelQuery
-    {
-        \$instance = new static();
-        \$conditions = \$instance->buildSearchConditions("%{\$keyword}%");
-
-        return static::find()
-            ->select("{\$instance->table}.*")
-            {$joinCallsStr}
-            ->where(\$conditions);
-    }
-}
-PHP;
-    }
-
-    /**
-     * Get Concrete Model template
-     */
-    private function getConcreteModelTemplate(string $modelName, string $namespace, array $options = []): string
-    {
+        // Realtime hooks generation
         $realtimeHooks = '';
         $realtimeImport = '';
 
@@ -878,7 +843,7 @@ PHP;
             $resourceName = strtolower($modelName);
 
             if ($useQueue) {
-                $realtimeImport = "\nuse Wibiesana\\Padi\\Core\\Queue;\nuse App\Jobs\BroadcastRealtimeJob;";
+                $realtimeImport = "\nuse Wibiesana\\Padi\\Core\\Queue;\nuse App\\Jobs\\BroadcastRealtimeJob;";
                 $realtimeHooks = <<<PHP
 \n
     /**
@@ -949,14 +914,71 @@ PHP;
 
 namespace {$namespace};
 
-use {$namespace}\Base\\{$modelName} as Base{$modelName};{$realtimeImport}
+use Wibiesana\Padi\Core\ActiveRecord;
+use Wibiesana\Padi\Core\ModelQuery;{$realtimeImport}
+
+class {$modelName} extends ActiveRecord
+{
+    protected string \$table = '{$tableName}';
+    protected string|array \$primaryKey = {$pkStr};
+    
+    protected array \$fillable = [
+        {$fillableStr}
+    ];
+    
+    protected array \$hidden = [{$hiddenStr}];
+{$auditConfig}
+{$relationsStr}
+    /**
+     * Build global search conditions
+     * Searches all fillable fields + related table display columns
+     */
+    protected function buildSearchConditions(string \$keyword): array
+    {
+        \$conditions = ['OR'];
+
+        // Search all fillable fields from this table
+        foreach (\$this->fillable as \$field) {
+            \$conditions[] = ["{\$this->table}.{\$field}", 'LIKE', \$keyword];
+        }
+{$relationSearchFieldsStr}
+
+        return \$conditions;
+    }
+
+    /**
+     * Start a model-aware search query builder
+     */
+    public static function search(string \$keyword): ModelQuery
+    {
+        \$instance = new static();
+        \$conditions = \$instance->buildSearchConditions("%{\$keyword}%");
+
+        return static::find()
+            ->select("{\$instance->table}.*")
+            {$joinCallsStr}
+            ->where(\$conditions);
+    }
+{$realtimeHooks}
+}
+PHP;
+    }
+
+    private function getConcreteModelTemplate(string $modelName, string $namespace, array $options = []): string
+    {
+        return <<<PHP
+<?php
+
+namespace {$namespace};
+
+use {$namespace}\Base\\{$modelName} as Base{$modelName};
 
 class {$modelName} extends Base{$modelName}
 {
     /**
      * Override methods here to add custom logic.
      * Use beforeSave(), afterSave(), etc. for lifecycle hooks.
-     */{$realtimeHooks}
+     */
 }
 PHP;
     }
@@ -1280,9 +1302,8 @@ PHP;
     public function generatePostmanCollection(string $tableName, array $options = []): bool
     {
         $modelName = $this->tableNameToModelName($tableName);
-        $resourceName = strtolower($modelName);
         $prefix = $options['prefix'] ?? str_replace('_', '-', strtolower($tableName));
-        $protected = $options['protected'] ?? ['store', 'update', 'destroy'];
+        $protected = $options['protected'] ?? ['index', 'all', 'show', 'store', 'update', 'destroy'];
 
         // Get schema for generating sample data
         $schema = $this->getTableSchema($tableName);
@@ -1430,12 +1451,22 @@ PHP;
         if (!empty($protected)) {
             foreach ($collection['item'] as &$item) {
                 $method = $item['request']['method'] ?? '';
+                $name = $item['name'] ?? '';
 
                 // Check if this endpoint should be protected
                 $isProtected = false;
-                if (in_array('store', $protected) && $method === 'POST') $isProtected = true;
-                if (in_array('update', $protected) && $method === 'PUT') $isProtected = true;
-                if (in_array('destroy', $protected) && $method === 'DELETE') $isProtected = true;
+                if (in_array('store', $protected, true) && $method === 'POST') $isProtected = true;
+                if (in_array('update', $protected, true) && $method === 'PUT') $isProtected = true;
+                if (in_array('destroy', $protected, true) && $method === 'DELETE') $isProtected = true;
+                if ($method === 'GET') {
+                    if (str_contains($name, 'Single')) {
+                        if (in_array('show', $protected, true)) $isProtected = true;
+                    } elseif (str_contains($name, 'No Pagination')) {
+                        if (in_array('all', $protected, true) || in_array('index', $protected, true)) $isProtected = true;
+                    } else {
+                        if (in_array('index', $protected, true)) $isProtected = true;
+                    }
+                }
 
                 if ($isProtected) {
                     $item['request']['header'][] = [
