@@ -180,11 +180,35 @@ class Validator
         }
     }
 
+    /**
+     * Determine if a field should be treated as numeric based on its type or validation rules
+     */
+    private function isNumericField(string $field, mixed $value): bool
+    {
+        if (is_int($value) || is_float($value)) {
+            return true;
+        }
+
+        if (is_string($value) && is_numeric($value)) {
+            $rules = $this->rules[$field] ?? [];
+            $rulesList = is_string($rules) ? explode('|', $rules) : $rules;
+            foreach ($rulesList as $rule) {
+                $colonPos = strpos($rule, ':');
+                $ruleName = $colonPos !== false ? substr($rule, 0, $colonPos) : $rule;
+                if ($ruleName === 'numeric' || $ruleName === 'integer') {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private function validateMin(string $field, mixed $value, int $minLength): void
     {
         if ($this->isEmpty($value)) return;
 
-        if (is_numeric($value)) {
+        if ($this->isNumericField($field, $value)) {
             if ((float)$value < $minLength) {
                 $this->addError($field, 'min', "The {field} must be at least {$minLength}");
             }
@@ -201,7 +225,7 @@ class Validator
     {
         if ($this->isEmpty($value)) return;
 
-        if (is_numeric($value)) {
+        if ($this->isNumericField($field, $value)) {
             if ((float)$value > $maxLength) {
                 $this->addError($field, 'max', "The {field} must not exceed {$maxLength}");
             }
@@ -350,7 +374,7 @@ class Validator
         $max = (int)$max;
 
         $size = is_array($value) ? count($value)
-            : (is_numeric($value) ? (float)$value : mb_strlen((string)$value));
+            : ($this->isNumericField($field, $value) ? (float)$value : mb_strlen((string)$value));
 
         if ($size < $min || $size > $max) {
             $this->addError($field, 'between', "The {field} must be between {$min} and {$max}");
@@ -362,7 +386,7 @@ class Validator
         if ($this->isEmpty($value)) return;
 
         $actual = is_array($value) ? count($value)
-            : (is_numeric($value) ? (float)$value : mb_strlen((string)$value));
+            : ($this->isNumericField($field, $value) ? (float)$value : mb_strlen((string)$value));
 
         if ((float)$actual !== (float)$size) {
             $this->addError($field, 'size', "The {field} must be exactly {$size}");
