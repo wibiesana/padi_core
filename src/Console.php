@@ -59,6 +59,15 @@ class Console
             case 'serve':
                 $this->serve();
                 break;
+            case 'serve:frankenphp':
+            case 'serve:standard':
+            case 'frankenphp':
+                $this->serveFrankenphp(false);
+                break;
+            case 'serve:worker':
+            case 'frankenphp:worker':
+                $this->serveFrankenphp(true);
+                break;
             case 'create:controller':
             case 'make:controller':
                 $this->createController();
@@ -102,7 +111,11 @@ class Console
         echo "  php padi <command> [options] [arguments]\n\n";
         echo "\e[33mAvailable commands:\e[0m\n";
 
-        echo "  \e[32mserve\e[0m                      Start the PHP development server\n";
+        echo "  \e[32mserve\e[0m                      Start PHP dev server (--frankenphp or --worker options supported)\n";
+        echo "  \e[32mserve:frankenphp\e[0m            Start FrankenPHP server in standard mode\n";
+        echo "  \e[32mserve:worker\e[0m                Start FrankenPHP server in worker mode\n";
+        echo "  \e[32mfrankenphp\e[0m                  Alias for serve:frankenphp\n";
+        echo "  \e[32mfrankenphp:worker\e[0m           Alias for serve:worker\n";
         echo "  \e[32minit\e[0m                       Initialize the application (Run Setup Wizard)\n";
 
         echo "\n \e[33mmake\e[0m\n";
@@ -124,6 +137,16 @@ class Console
 
     private function serve(): void
     {
+        if ($this->hasOption('worker') || $this->getOption('mode') === 'worker') {
+            $this->serveFrankenphp(true);
+            return;
+        }
+
+        if ($this->hasOption('frankenphp') || $this->getOption('driver') === 'frankenphp') {
+            $this->serveFrankenphp(false);
+            return;
+        }
+
         if (!self::functionAvailable('passthru')) {
             echo "\e[31mError: 'passthru' function is disabled. Cannot start dev server.\e[0m\n";
             return;
@@ -142,6 +165,92 @@ class Console
         echo "Press Ctrl+C to stop.\n";
 
         passthru("php -S {$host}:{$port} -t \"{$publicDir}\"");
+    }
+
+    private function serveFrankenphp(bool $worker = false): void
+    {
+        if (!self::functionAvailable('passthru')) {
+            echo "\e[31mError: 'passthru' function is disabled. Cannot start FrankenPHP server.\e[0m\n";
+            return;
+        }
+
+        $port = $this->getOption('port', '8085');
+        $host = $this->getOption('host', 'localhost');
+        $numWorkers = $this->getOption('workers', '');
+        $configFile = $this->getOption('config', '');
+        $publicDir = $this->baseDir . '/public';
+
+        if (!is_dir($publicDir)) {
+            echo "\e[31mError: Public directory not found at {$publicDir}\e[0m\n";
+            return;
+        }
+
+        $binary = $this->findFrankenphpBinary();
+        if (!$binary) {
+            $isWindows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
+            $exe = $isWindows ? 'frankenphp.exe' : 'frankenphp';
+            echo "\e[31mError: FrankenPHP binary ('{$exe}') was not found in project root or system PATH.\e[0m\n";
+            echo "\e[33mTo install FrankenPHP:\e[0m\n";
+            echo "  1. Download the binary from \e[36mhttps://frankenphp.dev\e[0m\n";
+            echo "  2. Place \e[33m{$exe}\e[0m in your project root directory or system PATH.\n";
+            return;
+        }
+
+        $modeLabel = $worker ? 'Worker Mode' : 'Standard Mode';
+        echo "\e[32mStarting FrankenPHP server ({$modeLabel}):\e[0m http://{$host}:{$port}\n";
+        echo "Press Ctrl+C to stop.\n\n";
+
+        if (!empty($configFile)) {
+            $cmd = "{$binary} run --config \"{$configFile}\"";
+        } elseif ($worker) {
+            $entryScript = "public/index.php";
+            $workerOpt = "--worker \"{$entryScript}\"";
+            if (!empty($numWorkers)) {
+                $workerOpt .= " --nb-workers {$numWorkers}";
+            }
+            $cmd = "{$binary} php-server {$workerOpt} -l \"{$host}:{$port}\"";
+        } else {
+            $cmd = "{$binary} php-server -r \"public\" -l \"{$host}:{$port}\"";
+        }
+
+        passthru($cmd);
+    }
+
+    private function findFrankenphpBinary(): ?string
+    {
+        $isWindows = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
+        $exe = $isWindows ? 'frankenphp.exe' : 'frankenphp';
+
+        // 1. Check in base directory
+        $localBinary = $this->baseDir . DIRECTORY_SEPARATOR . $exe;
+        if (file_exists($localBinary)) {
+            return escapeshellarg($localBinary);
+        }
+
+        // 2. Check system PATH using shell commands
+        $whereCmd = $isWindows ? "where {$exe} 2>NUL" : "which {$exe} 2>/dev/null";
+        $path = trim((string) @shell_exec($whereCmd));
+        if (!empty($path)) {
+            $lines = explode("\n", str_replace("\r", "", $path));
+            $firstPath = trim($lines[0] ?? '');
+            if ($firstPath !== '') {
+                return escapeshellarg($firstPath);
+            }
+        }
+
+        // 3. Check if 'frankenphp' works directly via version command
+        $testCmd = $isWindows ? "{$exe} version 2>NUL" : "{$exe} version 2>/dev/null";
+        $testOutput = @shell_exec($testCmd);
+        if ($testOutput !== null && $testOutput !== false) {
+            return $exe;
+        }
+
+        return null;
+    }
+
+    private function hasOption(string $name): bool
+    {
+        return isset($this->getOptions()[$name]);
     }
 
     private function getOption(string $name, string $default = ''): string
@@ -644,14 +753,12 @@ PHP;
      */
     private static function readKeyFFI(): string
     {
-        /**
-         * @var \FFI $ffi
-         * @method int _getch() Dynamically bound via FFI
-         */
+        /** @var \FFI $ffi */
         $ffi = self::$ffi;
 
-        /** @noinspection PhpUndefinedMethodInspection — _getch() is bound dynamically via FFI::cdef */
-        $ch = $ffi->_getch();
+        /** @var callable $getch */
+        $getch = [$ffi, '_getch'];
+        $ch = (int) $getch();
 
         // Enter
         if ($ch === 13) {
@@ -665,8 +772,7 @@ PHP;
         // Extended key (arrow keys, function keys):
         // First byte is 0x00 or 0xE0 (224), second byte is the scan code
         if ($ch === 0 || $ch === 224) {
-            /** @noinspection PhpUndefinedMethodInspection */
-            $scanCode = $ffi->_getch();
+            $scanCode = (int) $getch();
             return match ($scanCode) {
                 72 => 'UP',
                 80 => 'DOWN',
