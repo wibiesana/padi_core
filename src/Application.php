@@ -287,6 +287,10 @@ class Application
         }
 
         $uri = $_SERVER['REQUEST_URI'];
+        if (str_starts_with($uri, '//')) {
+            $uri = '/' . ltrim($uri, '/');
+        }
+
         $scriptName = $_SERVER['SCRIPT_NAME'];
         $scriptDir = dirname($scriptName);
 

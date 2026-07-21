@@ -31,7 +31,12 @@ class Request
     public function __construct()
     {
         $this->method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-        $this->uri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+        $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
+        if (str_starts_with($requestUri, '//')) {
+            $requestUri = '/' . ltrim($requestUri, '/');
+        }
+        $path = parse_url($requestUri, PHP_URL_PATH) ?: '/';
+        $this->uri = preg_replace('#/{2,}#', '/', $path) ?: '/';
         $this->query = $_GET;
         $this->files = $_FILES;
         $this->parseHeaders();
