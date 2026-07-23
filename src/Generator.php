@@ -1020,16 +1020,20 @@ PHP;
 
         // Autodetect relations for index eager loading via Real Foreign Keys
         $withRelations = [];
+        $sortableRelationsEntries = [];
         $foreignKeys = $this->getTableForeignKeys($tableName);
 
         foreach ($foreignKeys as $fk) {
             $column = $fk['COLUMN_NAME'];
             $relName = $this->getRelationName($column);
+            $refTable = $fk['REFERENCED_TABLE_NAME'];
+            $refCol = $fk['REFERENCED_COLUMN_NAME'];
             // Determine display column for the referenced table
-            $displayCol = $this->getDisplayColumn($fk['REFERENCED_TABLE_NAME']);
+            $displayCol = $this->getDisplayColumn($refTable);
 
             // Default to id,displayCol for safety and performance
             $withRelations[] = "'{$relName}:id,{$displayCol}'";
+            $sortableRelationsEntries[] = "            '{$relName}' => ['{$refTable}', '{$relName}', '{$tableName}.{$column}', '{$relName}.{$refCol}', '{$relName}.{$displayCol}']";
         }
 
         $withRelationsProp = "";
@@ -1039,6 +1043,13 @@ PHP;
             $withRelationsArray = "[\n        {$arrayContent}\n    ]";
         }
         $withRelationsProp = "\n    /** @var array Relations for eager loading */\n    protected array \$withRelations = {$withRelationsArray};\n";
+
+        $sortableRelationsCode = "";
+        if (!empty($sortableRelationsEntries)) {
+            $sortableRelationsCode = "        \$sortableRelations = [\n" . implode(",\n", $sortableRelationsEntries) . "\n        ];\n";
+        } else {
+            $sortableRelationsCode = "        \$sortableRelations = [];\n";
+        }
 
         return <<<PHP
 <?php
@@ -1071,13 +1082,24 @@ class {$controllerName} extends Controller
         \$search = \$this->request->query('search');
         
         \$sortBy = \$this->request->query('sort_by');
-        \$order = \$this->request->query('order', 'asc');
-        \$orderBy = \$sortBy ? (\$sortBy . ' ' . (strtolower(\$order) === 'desc' ? 'DESC' : 'ASC')) : null;
+        \$order = strtoupper(\$this->request->query('order', 'asc')) === 'DESC' ? 'DESC' : 'ASC';
 
+{$sortableRelationsCode}
         \$query = \$search ? {$modelName}::search(substr(\$search, 0, 255)) : {$modelName}::find();
         
+        if (\$sortBy && isset(\$sortableRelations[\$sortBy])) {
+            [\$refTable, \$alias, \$fkCol, \$refCol, \$sortColumn] = \$sortableRelations[\$sortBy];
+            if (!\$search) {
+                \$query->select('{$tableName}.*')->leftJoin("{\$refTable} AS {\$alias}", "{\$fkCol} = {\$refCol}");
+            }
+            \$query->orderBy("{\$sortColumn} {\$order}");
+        } elseif (\$sortBy) {
+            \$query->orderBy("{$tableName}.{\$sortBy} {\$order}");
+        } else {
+            \$query->orderBy('{$tableName}.id DESC');
+        }
+
         \$result = \$query->with(...\$this->withRelations)
-            ->orderBy(\$orderBy ?? 'id DESC')
             ->paginate(\$perPage, \$page);
 
         return {$modelName}Resource::collection(\$result);
@@ -1092,13 +1114,24 @@ class {$controllerName} extends Controller
         \$search = \$this->request->query('search');
         \$limit = min(5000, max(1, (int)\$this->request->query('limit', 1000)));
         \$sortBy = \$this->request->query('sort_by');
-        \$order = \$this->request->query('order', 'asc');
-        \$orderBy = \$sortBy ? (\$sortBy . ' ' . (strtolower(\$order) === 'desc' ? 'DESC' : 'ASC')) : null;
+        \$order = strtoupper(\$this->request->query('order', 'asc')) === 'DESC' ? 'DESC' : 'ASC';
 
+{$sortableRelationsCode}
         \$query = \$search ? {$modelName}::search(substr(\$search, 0, 255)) : {$modelName}::find();
         
+        if (\$sortBy && isset(\$sortableRelations[\$sortBy])) {
+            [\$refTable, \$alias, \$fkCol, \$refCol, \$sortColumn] = \$sortableRelations[\$sortBy];
+            if (!\$search) {
+                \$query->select('{$tableName}.*')->leftJoin("{\$refTable} AS {\$alias}", "{\$fkCol} = {\$refCol}");
+            }
+            \$query->orderBy("{\$sortColumn} {\$order}");
+        } elseif (\$sortBy) {
+            \$query->orderBy("{$tableName}.{\$sortBy} {\$order}");
+        } else {
+            \$query->orderBy('{$tableName}.id DESC');
+        }
+
         \$results = \$query->with(...\$this->withRelations)
-            ->orderBy(\$orderBy ?? 'id DESC')
             ->limit(\$limit)
             ->all();
 
