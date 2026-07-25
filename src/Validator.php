@@ -524,7 +524,7 @@ class Validator
 
             return ($result['count'] ?? 0) > 0;
         } catch (\Exception $e) {
-            if (Env::get('APP_DEBUG') === 'true') {
+            if (Env::get('APP_ENV', 'production') === 'development' && Env::get('APP_DEBUG') === 'true') {
                 error_log("Validator checkUnique error: " . $e->getMessage());
             }
             return false;

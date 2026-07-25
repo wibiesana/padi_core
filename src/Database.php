@@ -62,7 +62,7 @@ class Database
     {
         self::$queryCount++;
 
-        if (Env::get('APP_DEBUG', 'false') === 'true') {
+        if (Env::get('APP_ENV', 'production') === 'development' && Env::get('APP_DEBUG', 'false') === 'true') {
             // Cap query log to prevent unbounded memory growth in worker mode or long-lived PHP-FPM processes
             if (count(self::$queries) < self::$maxQueryLog) {
                 self::$queries[] = [

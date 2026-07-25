@@ -27,7 +27,7 @@ abstract class Controller
     {
         $this->request = $request ?? new Request();
         $this->response = new Response();
-        $this->isDebug = Env::get('APP_DEBUG', 'false') === 'true';
+        $this->isDebug = Env::get('APP_ENV', 'production') === 'development' && Env::get('APP_DEBUG', 'false') === 'true';
     }
 
     // ──────────────────────────────────────────────

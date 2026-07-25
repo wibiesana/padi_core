@@ -137,7 +137,7 @@ class Auth
             self::$decodedCache = $decoded;
             return $decoded;
         } catch (Exception $e) {
-            if (Env::get('APP_DEBUG') === 'true') {
+            if (Env::get('APP_ENV', 'production') === 'development' && Env::get('APP_DEBUG') === 'true') {
                 error_log("[Auth] JWT verification failed: " . $e->getMessage());
             }
             self::$tokenCache = $token;

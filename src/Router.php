@@ -296,8 +296,9 @@ class Router
             $error['errors'] = $e->getErrors();
         }
 
-        // Debug info only in debug mode
-        if (Env::get('APP_DEBUG', 'false') === 'true') {
+        // Debug info only in debug mode (development environment)
+        $isDebug = Env::get('APP_ENV', 'production') === 'development' && Env::get('APP_DEBUG', 'false') === 'true';
+        if ($isDebug) {
             $error['debug'] = [
                 'file' => $e->getFile(),
                 'line' => $e->getLine(),
