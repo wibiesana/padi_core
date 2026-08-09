@@ -106,7 +106,7 @@ class Console
 
     private function showHelp(): void
     {
-        echo "\e[32mPadi REST API Framework\e[0m version \e[33m2.1.4\e[0m\n\n";
+        echo "\e[32mPadi REST API Framework\e[0m version \e[33m2.1.5\e[0m\n\n";
         echo "\e[33mUsage:\e[0m\n";
         echo "  php padi <command> [options] [arguments]\n\n";
         echo "\e[33mAvailable commands:\e[0m\n";
