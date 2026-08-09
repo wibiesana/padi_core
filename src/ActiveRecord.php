@@ -472,25 +472,36 @@ abstract class ActiveRecord
     }
 
     /**
-     * Find record by ID, or start a model-aware query builder.
+     * Start a model-aware query builder for fluent chaining.
      * 
-     * When called without arguments, returns a ModelQuery for fluent chaining:
+     * Returns a ModelQuery that can be chained with with(), where(),
+     * orderBy(), limit(), paginate(), all(), one(), etc.
+     * 
+     * Usage:
      *   MyModel::find()->with('relation')->orderBy('id DESC')->limit(100)->all();
+     *   MyModel::find()->where(['status' => 'active'])->one();
      * 
-     * When called with an ID, finds a single record by primary key:
-     *   MyModel::find(5);
-     *   MyModel::find(5, ['id', 'name']);
+     * To find by primary key, use findByPk() or findOne():
+     *   MyModel::findByPk(5);
+     *   MyModel::findOne(5);
      */
-    public static function find(int|string|array|null $id = null, array $columns = ['*']): ModelQuery|array|null
+    public static function find(): ModelQuery
+    {
+        $instance = new static();
+        return new ModelQuery($instance);
+    }
+
+    /**
+     * Find record by primary key.
+     * 
+     *   MyModel::findByPk(5);
+     *   MyModel::findByPk(5, ['id', 'name']);
+     *   MyModel::findByPk([1, 2]); // composite PK
+     */
+    public static function findByPk(int|string|array $id, array $columns = ['*']): ?array
     {
         $instance = new static();
 
-        // No ID: return a fluent query builder
-        if ($id === null) {
-            return new ModelQuery($instance);
-        }
-
-        // With ID: find by primary key
         $sanitizedCols = array_map(function ($col) {
             if ($col === '*') return $col;
             if (!preg_match('/^[a-zA-Z0-9_-]+$/', $col)) {
@@ -537,14 +548,14 @@ abstract class ActiveRecord
     /**
      * Find a single record by primary key
      * 
-     * Convenience alias for find($id). Supports Yii2-style usage:
+     * Convenience alias for findByPk($id). Supports Yii2-style usage:
      *   MyModel::findOne(5);
      *   MyModel::findOne(5, ['id', 'name']);
      *   $this->modelClass::findOne($id);
      */
     public static function findOne(int|string|array $id, array $columns = ['*']): ?array
     {
-        return static::find($id, $columns);
+        return static::findByPk($id, $columns);
     }
 
     /**
