@@ -914,8 +914,7 @@ PHP;
 
 namespace {$namespace};
 
-use Wibiesana\Padi\Core\ActiveRecord;
-use Wibiesana\Padi\Core\ModelQuery;{$realtimeImport}
+use Wibiesana\Padi\Core\ActiveRecord;{$realtimeImport}
 
 class {$modelName} extends ActiveRecord
 {
@@ -1037,10 +1036,10 @@ class {$controllerName} extends Controller
         \$page = max(1, (int)\$this->request->query('page', 1));
         \$perPage = min(100, max(1, (int)\$this->request->query('per-page', 25)));
 
-        \$result = \$this->query({$modelName}::class, \$this->withRelations)
+        \$results = \$this->query({$modelName}::class, \$this->withRelations)
             ->paginate(\$perPage, \$page);
 
-        return {$modelName}Resource::collect(\$result);
+        return {$modelName}Resource::wraps(\$results);
     }
     
     /**
@@ -1055,7 +1054,7 @@ class {$controllerName} extends Controller
             ->limit(\$limit)
             ->all();
 
-        return {$modelName}Resource::collect(\$results);
+        return {$modelName}Resource::wraps(\$results);
     }
     
     /**
@@ -1065,9 +1064,9 @@ class {$controllerName} extends Controller
     public function show()
     {
         \$id = \$this->request->param('id');
-        \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
+        \$result = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
         
-        return {$modelName}Resource::wrap(\${$resourceName});
+        return {$modelName}Resource::wrap(\$result);
     }
     
     /**
@@ -1082,8 +1081,8 @@ class {$controllerName} extends Controller
         
         try {
             \$id = {$modelName}::create(\$validated);
-            \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
-            return \$this->created({$modelName}Resource::wrap(\${$resourceName}));
+            \$result = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
+            return \$this->created({$modelName}Resource::wrap(\$result));
         } catch (\PDOException \$e) {
             \$this->databaseError('Failed to create {$resourceName}', \$e);
         }
@@ -1104,8 +1103,8 @@ class {$controllerName} extends Controller
         
         try {
             {$modelName}::update(\$id, \$validated);
-            \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
-            return {$modelName}Resource::wrap(\${$resourceName});
+            \$result = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
+            return {$modelName}Resource::wrap(\$result);
         } catch (\PDOException \$e) {
             \$this->databaseError('Failed to update {$resourceName}', \$e);
         }

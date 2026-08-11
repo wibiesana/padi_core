@@ -21,15 +21,18 @@ abstract class Resource implements \JsonSerializable
     }
 
     /**
-     * Create a new resource instance
+     * Wrap a single resource instance (Singular)
+     * 
+     * @param mixed $resource The resource instance/array
+     * @return static
      */
-    public static function make(mixed $resource): static
+    public static function wrap(mixed $resource): static
     {
         return new static($resource);
     }
 
     /**
-     * Create a collection of resources
+     * Wrap a collection of resources (Plural)
      * 
      * Handles both paginated results (with 'data' key)
      * and flat arrays of items.
@@ -37,7 +40,7 @@ abstract class Resource implements \JsonSerializable
      * @param mixed $resource Array of items or paginated result
      * @return array
      */
-    public static function collection(mixed $resource): array
+    public static function wraps(mixed $resource): array
     {
         // Handle paginated or enveloped results containing a 'data' array
         if (is_array($resource) && isset($resource['data']) && is_array($resource['data'])) {
@@ -57,32 +60,6 @@ abstract class Resource implements \JsonSerializable
         }
 
         return [];
-    }
-
-    /**
-     * Alias for make() - Create a new resource instance
-     * 
-     * Guaranteed no IDE/Intelephense stub conflicts.
-     * 
-     * @param mixed $resource The resource instance/array
-     * @return static
-     */
-    public static function wrap(mixed $resource): static
-    {
-        return static::make($resource);
-    }
-
-    /**
-     * Alias for collection() - Create a collection of resources
-     * 
-     * Guaranteed no IDE/Intelephense stub conflicts.
-     * 
-     * @param mixed $resource Array of items or paginated result
-     * @return array
-     */
-    public static function collect(mixed $resource): array
-    {
-        return static::collection($resource);
     }
 
     /**
