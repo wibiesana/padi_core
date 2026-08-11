@@ -161,6 +161,69 @@ abstract class ActiveRecord
     }
 
     /**
+     * Configuration for extra relations to include in global search
+     * Example: ['teacher' => ['table' => 'teachers', 'foreign_key' => 'teacher_id', 'columns' => ['name', 'nip']]]
+     */
+    protected array $searchableRelations = [];
+
+    /**
+     * Generic model-aware search query builder
+     */
+    public static function search(string $keyword): ModelQuery
+    {
+        $instance = new static();
+        $term = "%{$keyword}%";
+        $likeOp = $instance->getLikeOperator();
+
+        $conditions = ['OR'];
+
+        // Auto search all fillable columns of current table
+        foreach ($instance->fillable as $field) {
+            $conditions[] = ["{$instance->table}.{$field}", $likeOp, $term];
+        }
+
+        $query = static::find()->select("{$instance->table}.*");
+
+        // Auto join & search audit user fields if audit is enabled and table contains audit columns
+        if ($instance->useAudit) {
+            $tableCols = $instance->getTableColumns();
+            $defaults = [
+                'created_by' => 'created_by',
+                'updated_by' => 'updated_by',
+            ];
+            $fields = array_merge($defaults, $instance->auditFields ?: []);
+
+            // Join creator user if created_by column exists
+            if (empty($tableCols) || in_array($fields['created_by'], $tableCols, true)) {
+                $query->leftJoin('users AS creator', "{$instance->table}.{$fields['created_by']} = creator.id");
+                $conditions[] = ['creator.username', $likeOp, $term];
+            }
+
+            // Join updater user if updated_by column exists
+            if (empty($tableCols) || in_array($fields['updated_by'], $tableCols, true)) {
+                $query->leftJoin('users AS updater', "{$instance->table}.{$fields['updated_by']} = updater.id");
+                $conditions[] = ['updater.username', $likeOp, $term];
+            }
+        }
+
+        // Custom relations search
+        foreach ($instance->searchableRelations as $alias => $config) {
+            $refTable = $config['table'];
+            $fk       = $config['foreign_key'];
+            $refKey   = $config['owner_key'] ?? 'id';
+            $columns  = (array)($config['columns'] ?? []);
+
+            $query->leftJoin("{$refTable} AS {$alias}", "{$instance->table}.{$fk} = {$alias}.{$refKey}");
+
+            foreach ($columns as $col) {
+                $conditions[] = ["{$alias}.{$col}", $likeOp, $term];
+            }
+        }
+
+        return $query->where($conditions);
+    }
+
+    /**
      * Start a new model-aware query builder
      * 
      * @deprecated Use static::find() instead.

@@ -56,6 +56,41 @@ abstract class Controller
         return $validator->validated();
     }
 
+    /**
+     * Build standard model query with auto search, sort, and eager loading from Request
+     *
+     * @param string $modelClass FQCN Model (e.g. Semester::class)
+     * @param array $withRelations List of eager loaded relations
+     * @return ModelQuery
+     */
+    protected function query(string $modelClass, array $withRelations = []): ModelQuery
+    {
+        $search = $this->request->query('search');
+        $sortBy = $this->request->query('sort_by');
+        $order  = strtoupper((string)$this->request->query('order', 'asc')) === 'DESC' ? 'DESC' : 'ASC';
+
+        /** @var ModelQuery $query */
+        if ($search && method_exists($modelClass, 'search')) {
+            $query = $modelClass::search(substr((string)$search, 0, 255));
+        } else {
+            $query = $modelClass::find();
+        }
+
+        if ($sortBy) {
+            $tableName = (new $modelClass())->getTable();
+            $query->orderBy("{$tableName}.{$sortBy} {$order}");
+        } else {
+            $tableName = (new $modelClass())->getTable();
+            $query->orderBy("{$tableName}.id DESC");
+        }
+
+        if (!empty($withRelations)) {
+            $query->with(...$withRelations);
+        }
+
+        return $query;
+    }
+
     // ──────────────────────────────────────────────
     //  RESPONSE HELPERS (DRY)
     // ──────────────────────────────────────────────

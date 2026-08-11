@@ -929,36 +929,6 @@ class {$modelName} extends ActiveRecord
     protected array \$hidden = [{$hiddenStr}];
 {$auditConfig}
 {$relationsStr}
-    /**
-     * Build global search conditions
-     * Searches all fillable fields + related table display columns
-     */
-    protected function buildSearchConditions(string \$keyword): array
-    {
-        \$conditions = ['OR'];
-
-        // Search all fillable fields from this table
-        foreach (\$this->fillable as \$field) {
-            \$conditions[] = ["{\$this->table}.{\$field}", 'LIKE', \$keyword];
-        }
-{$relationSearchFieldsStr}
-
-        return \$conditions;
-    }
-
-    /**
-     * Start a model-aware search query builder
-     */
-    public static function search(string \$keyword): ModelQuery
-    {
-        \$instance = new static();
-        \$conditions = \$instance->buildSearchConditions("%{\$keyword}%");
-
-        return static::find()
-            ->select("{\$instance->table}.*")
-            {$joinCallsStr}
-            ->where(\$conditions);
-    }
 {$realtimeHooks}
 }
 PHP;
@@ -1024,20 +994,17 @@ PHP;
 
         // Autodetect relations for index eager loading via Real Foreign Keys
         $withRelations = [];
-        $sortableRelationsEntries = [];
         $foreignKeys = $this->getTableForeignKeys($tableName);
 
         foreach ($foreignKeys as $fk) {
             $column = $fk['COLUMN_NAME'];
             $relName = $this->getRelationName($column);
             $refTable = $fk['REFERENCED_TABLE_NAME'];
-            $refCol = $fk['REFERENCED_COLUMN_NAME'];
             // Determine display column for the referenced table
             $displayCol = $this->getDisplayColumn($refTable);
 
             // Default to id,displayCol for safety and performance
             $withRelations[] = "'{$relName}:id,{$displayCol}'";
-            $sortableRelationsEntries[] = "            '{$relName}' => ['{$refTable}', '{$relName}', '{$tableName}.{$column}', '{$relName}.{$refCol}', '{$relName}.{$displayCol}']";
         }
 
         $withRelationsProp = "";
@@ -1047,13 +1014,6 @@ PHP;
             $withRelationsArray = "[\n        {$arrayContent}\n    ]";
         }
         $withRelationsProp = "\n    /** @var array Relations for eager loading */\n    protected array \$withRelations = {$withRelationsArray};\n";
-
-        $sortableRelationsCode = "";
-        if (!empty($sortableRelationsEntries)) {
-            $sortableRelationsCode = "        \$sortableRelations = [\n" . implode(",\n", $sortableRelationsEntries) . "\n        ];\n";
-        } else {
-            $sortableRelationsCode = "        \$sortableRelations = [];\n";
-        }
 
         return <<<PHP
 <?php
@@ -1076,27 +1036,8 @@ class {$controllerName} extends Controller
     {
         \$page = max(1, (int)\$this->request->query('page', 1));
         \$perPage = min(100, max(1, (int)\$this->request->query('per-page', 25)));
-        \$search = \$this->request->query('search');
-        
-        \$sortBy = \$this->request->query('sort_by');
-        \$order = strtoupper(\$this->request->query('order', 'asc')) === 'DESC' ? 'DESC' : 'ASC';
 
-{$sortableRelationsCode}
-        \$query = \$search ? {$modelName}::search(substr(\$search, 0, 255)) : {$modelName}::find();
-        
-        if (\$sortBy && isset(\$sortableRelations[\$sortBy])) {
-            [\$refTable, \$alias, \$fkCol, \$refCol, \$sortColumn] = \$sortableRelations[\$sortBy];
-            if (!\$search) {
-                \$query->select('{$tableName}.*')->leftJoin("{\$refTable} AS {\$alias}", "{\$fkCol} = {\$refCol}");
-            }
-            \$query->orderBy("{\$sortColumn} {\$order}");
-        } elseif (\$sortBy) {
-            \$query->orderBy("{$tableName}.{\$sortBy} {\$order}");
-        } else {
-            \$query->orderBy('{$tableName}.{$pkCol} DESC');
-        }
-
-        \$result = \$query->with(...\$this->withRelations)
+        \$result = \$this->query({$modelName}::class, \$this->withRelations)
             ->paginate(\$perPage, \$page);
 
         return {$modelName}Resource::collect(\$result);
@@ -1108,27 +1049,9 @@ class {$controllerName} extends Controller
      */
     public function all()
     {
-        \$search = \$this->request->query('search');
         \$limit = min(5000, max(1, (int)\$this->request->query('limit', 1000)));
-        \$sortBy = \$this->request->query('sort_by');
-        \$order = strtoupper(\$this->request->query('order', 'asc')) === 'DESC' ? 'DESC' : 'ASC';
 
-{$sortableRelationsCode}
-        \$query = \$search ? {$modelName}::search(substr(\$search, 0, 255)) : {$modelName}::find();
-        
-        if (\$sortBy && isset(\$sortableRelations[\$sortBy])) {
-            [\$refTable, \$alias, \$fkCol, \$refCol, \$sortColumn] = \$sortableRelations[\$sortBy];
-            if (!\$search) {
-                \$query->select('{$tableName}.*')->leftJoin("{\$refTable} AS {\$alias}", "{\$fkCol} = {\$refCol}");
-            }
-            \$query->orderBy("{\$sortColumn} {\$order}");
-        } elseif (\$sortBy) {
-            \$query->orderBy("{$tableName}.{\$sortBy} {\$order}");
-        } else {
-            \$query->orderBy('{$tableName}.{$pkCol} DESC');
-        }
-
-        \$results = \$query->with(...\$this->withRelations)
+        \$results = \$this->query({$modelName}::class, \$this->withRelations)
             ->limit(\$limit)
             ->all();
 
@@ -1339,8 +1262,12 @@ PHP;
         $schema = $this->getTableSchema($tableName);
         $sampleData = $this->generateSampleData($schema);
 
+        // Detect primary key for default sorting column in collection
+        $pk = $this->detectPrimaryKey($tableName);
+        $sortCol = is_array($pk) ? ($pk[0] ?? 'id') : ($pk ?: 'id');
+
         // Get base URL from env or use default
-        $baseUrl = Env::get('APP_URL', 'http://localhost:8000');
+        $baseUrl = Env::get('APP_URL', 'http://localhost:8085');
         $apiPrefix = '';
 
         $collection = [
@@ -1357,43 +1284,34 @@ PHP;
                         'method' => 'GET',
                         'header' => [],
                         'url' => [
-                            'raw' => "{{base_url}}{$apiPrefix}/{$prefix}?page=1&per-page=25",
+                            'raw' => "{{base_url}}{$apiPrefix}/{$prefix}?page=1&per-page=25&search=&sort_by={$sortCol}&order=desc",
                             'host' => ['{{base_url}}'],
                             'path' => [ltrim($apiPrefix, '/'), $prefix],
                             'query' => [
                                 ['key' => 'page', 'value' => '1'],
-                                ['key' => 'per-page', 'value' => '25']
+                                ['key' => 'per-page', 'value' => '25'],
+                                ['key' => 'search', 'value' => ''],
+                                ['key' => 'sort_by', 'value' => $sortCol],
+                                ['key' => 'order', 'value' => 'desc']
                             ]
                         ]
                     ],
                     'response' => []
                 ],
-                [
-                    'name' => "Search {$modelName}s",
-                    'request' => [
-                        'method' => 'GET',
-                        'header' => [],
-                        'url' => [
-                            'raw' => "{{base_url}}{$apiPrefix}/{$prefix}?search=sample",
-                            'host' => ['{{base_url}}'],
-                            'path' => [ltrim($apiPrefix, '/'), $prefix],
-                            'query' => [
-                                ['key' => 'search', 'value' => 'sample']
-                            ]
-                        ]
-                    ],
-                    'response' => []
-                ],
-
                 [
                     'name' => "Get All {$modelName}s (No Pagination)",
                     'request' => [
                         'method' => 'GET',
                         'header' => [],
                         'url' => [
-                            'raw' => "{{base_url}}{$apiPrefix}/{$prefix}/all",
+                            'raw' => "{{base_url}}{$apiPrefix}/{$prefix}/all?search=&sort_by={$sortCol}&order=desc",
                             'host' => ['{{base_url}}'],
-                            'path' => [ltrim($apiPrefix, '/'), $prefix, 'all']
+                            'path' => [ltrim($apiPrefix, '/'), $prefix, 'all'],
+                            'query' => [
+                                ['key' => 'search', 'value' => ''],
+                                ['key' => 'sort_by', 'value' => $sortCol],
+                                ['key' => 'order', 'value' => 'desc']
+                            ]
                         ]
                     ],
                     'response' => []
