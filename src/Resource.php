@@ -9,9 +9,6 @@ namespace Wibiesana\Padi\Core;
  * 
  * Similar to Laravel Resources or Yii Fields.
  * Transforms raw database arrays into clean API response shapes.
- * 
- * @method static static make(mixed $resource) Create a new resource instance
- * @method static array collection(mixed $resource) Create a collection of resources
  */
 abstract class Resource implements \JsonSerializable
 {
@@ -34,13 +31,16 @@ abstract class Resource implements \JsonSerializable
     /**
      * Create a collection of resources
      * 
-     * Handles both paginated results ['data' => [...], 'meta' => [...]]
+     * Handles both paginated results (with 'data' key)
      * and flat arrays of items.
+     * 
+     * @param mixed $resource Array of items or paginated result
+     * @return array
      */
     public static function collection(mixed $resource): array
     {
-        // Handle paginated results
-        if (is_array($resource) && isset($resource['data'], $resource['meta'])) {
+        // Handle paginated or enveloped results containing a 'data' array
+        if (is_array($resource) && isset($resource['data']) && is_array($resource['data'])) {
             $resource['data'] = array_map(
                 static fn(mixed $item): array => (new static($item))->resolve(),
                 $resource['data']
@@ -57,6 +57,32 @@ abstract class Resource implements \JsonSerializable
         }
 
         return [];
+    }
+
+    /**
+     * Alias for make() - Create a new resource instance
+     * 
+     * Guaranteed no IDE/Intelephense stub conflicts.
+     * 
+     * @param mixed $resource The resource instance/array
+     * @return static
+     */
+    public static function wrap(mixed $resource): static
+    {
+        return static::make($resource);
+    }
+
+    /**
+     * Alias for collection() - Create a collection of resources
+     * 
+     * Guaranteed no IDE/Intelephense stub conflicts.
+     * 
+     * @param mixed $resource Array of items or paginated result
+     * @return array
+     */
+    public static function collect(mixed $resource): array
+    {
+        return static::collection($resource);
     }
 
     /**

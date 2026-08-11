@@ -216,10 +216,6 @@ namespace {$namespace};
 
 use Wibiesana\Padi\Core\Resource;
 
-/**
- * @method static static make(mixed $resource)
- * @method static array collection(mixed $resource)
- */
 class {$resourceName} extends Resource
 {
     public function toArray(\$request): array
@@ -1103,7 +1099,7 @@ class {$controllerName} extends Controller
         \$result = \$query->with(...\$this->withRelations)
             ->paginate(\$perPage, \$page);
 
-        return {$modelName}Resource::collection(\$result);
+        return {$modelName}Resource::collect(\$result);
     }
     
     /**
@@ -1136,7 +1132,7 @@ class {$controllerName} extends Controller
             ->limit(\$limit)
             ->all();
 
-        return {$modelName}Resource::collection(\$results);
+        return {$modelName}Resource::collect(\$results);
     }
     
     /**
@@ -1148,7 +1144,7 @@ class {$controllerName} extends Controller
         \$id = \$this->request->param('id');
         \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
         
-        return {$modelName}Resource::make(\${$resourceName});
+        return {$modelName}Resource::wrap(\${$resourceName});
     }
     
     /**
@@ -1164,7 +1160,7 @@ class {$controllerName} extends Controller
         try {
             \$id = {$modelName}::create(\$validated);
             \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
-            return \$this->created({$modelName}Resource::make(\${$resourceName}));
+            return \$this->created({$modelName}Resource::wrap(\${$resourceName}));
         } catch (\PDOException \$e) {
             \$this->databaseError('Failed to create {$resourceName}', \$e);
         }
@@ -1186,7 +1182,7 @@ class {$controllerName} extends Controller
         try {
             {$modelName}::update(\$id, \$validated);
             \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
-            return {$modelName}Resource::make(\${$resourceName});
+            return {$modelName}Resource::wrap(\${$resourceName});
         } catch (\PDOException \$e) {
             \$this->databaseError('Failed to update {$resourceName}', \$e);
         }
