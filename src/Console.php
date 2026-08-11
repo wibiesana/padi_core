@@ -216,7 +216,7 @@ class Console
             if (!empty($numWorkers)) {
                 $workerOpt .= " --nb-workers {$numWorkers}";
             }
-            $cmd = "{$binary} php-server {$workerOpt} -l \"{$host}:{$port}\"";
+            $cmd = "{$binary} php-server -r \"public\" {$workerOpt} -l \"{$host}:{$port}\"";
         } else {
             $cmd = "{$binary} php-server -r \"public\" -l \"{$host}:{$port}\"";
         }
