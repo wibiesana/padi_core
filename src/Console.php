@@ -468,19 +468,8 @@ PHP;
 
     private function init(): void
     {
-        $initScript = $this->baseDir . '/scripts/init.php';
-        if (!file_exists($initScript)) {
-            echo "\e[31mError: Setup wizard not found at {$initScript}\e[0m\n";
-            return;
-        }
-
-        if (!self::functionAvailable('passthru')) {
-            echo "\e[31mError: 'passthru' function is disabled. Cannot run setup wizard.\e[0m\n";
-            echo "\e[33mRun manually: php \"{$initScript}\"\e[0m\n";
-            return;
-        }
-
-        passthru("php \"{$initScript}\"");
+        $wizard = new SetupWizard($this->baseDir);
+        $wizard->run();
     }
 
     // =========================================================================
