@@ -85,7 +85,7 @@ class SetupWizard
         echo str_repeat('-', 60) . PHP_EOL;
 
         foreach ($options as $key => $label) {
-            $marker = ($key == $default) ? '→' : ' ';
+            $marker = ($key == $default) ? '→' : '2.1.7';
             echo "  $marker $key. $label" . PHP_EOL;
         }
         echo str_repeat('-', 60) . PHP_EOL;
@@ -102,14 +102,14 @@ class SetupWizard
 
     private function banner(): void
     {
-        $version = defined('Wibiesana\Padi\Core\Query::VERSION') ? Query::VERSION : '2.1.5';
-        $versionStr = str_pad("Version 2.1.6                             ║
+        $version = defined('Wibiesana\Padi\Core\Query::VERSION') ? Query::VERSION : '2.1.6';
+        $versionStr = str_pad("Version {$version}", 64, ' ', STR_PAD_BOTH);
 
         $banner = <<<BANNER
 
 ╔════════════════════════════════════════════════════════════════╗
 ║             Padi REST API Framework - Setup Wizard             ║
-║                        {$versionStr} ║
+║{$versionStr}║
 ║                    Powered by Padi Console                     ║
 ╚════════════════════════════════════════════════════════════════╝
 
