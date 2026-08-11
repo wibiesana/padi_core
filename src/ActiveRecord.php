@@ -546,6 +546,20 @@ abstract class ActiveRecord
     }
 
     /**
+     * Pass dynamic static method calls to an instance of the model.
+     * Allows static calls like Product::create($data), Product::update($id, $data), Product::delete($id), etc.
+     */
+    public static function __callStatic(string $method, array $arguments)
+    {
+        $instance = new static();
+        if (method_exists($instance, $method)) {
+            return $instance->$method(...$arguments);
+        }
+        throw new \BadMethodCallException("Method {$method} does not exist on " . static::class);
+    }
+
+
+    /**
      * Find a single record by primary key
      * 
      * Convenience alias for findByPk($id). Supports Yii2-style usage:

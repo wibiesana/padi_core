@@ -1018,6 +1018,10 @@ PHP;
         $storeRules  = rtrim($storeRulesStr,  ",\n");
         $updateRules = rtrim($updateRulesStr, ",\n");
 
+        // Autodetect primary key for default ordering
+        $pkDetected = $this->detectPrimaryKey($tableName);
+        $pkCol = is_array($pkDetected) ? ($pkDetected[0] ?? 'id') : $pkDetected;
+
         // Autodetect relations for index eager loading via Real Foreign Keys
         $withRelations = [];
         $sortableRelationsEntries = [];
@@ -1063,13 +1067,7 @@ use App\Resources\\{$modelName}Resource;
 
 class {$controllerName} extends Controller
 {
-    protected {$modelName} \$model;{$withRelationsProp}
-    
-    public function __construct(?Request \$request = null)
-    {
-        parent::__construct(\$request);
-        \$this->model = new {$modelName}();
-    }
+    {$withRelationsProp}
     
     /**
      * Get all {$resourceName}s with pagination
@@ -1096,7 +1094,7 @@ class {$controllerName} extends Controller
         } elseif (\$sortBy) {
             \$query->orderBy("{$tableName}.{\$sortBy} {\$order}");
         } else {
-            \$query->orderBy('{$tableName}.id DESC');
+            \$query->orderBy('{$tableName}.{$pkCol} DESC');
         }
 
         \$result = \$query->with(...\$this->withRelations)
@@ -1128,7 +1126,7 @@ class {$controllerName} extends Controller
         } elseif (\$sortBy) {
             \$query->orderBy("{$tableName}.{\$sortBy} {\$order}");
         } else {
-            \$query->orderBy('{$tableName}.id DESC');
+            \$query->orderBy('{$tableName}.{$pkCol} DESC');
         }
 
         \$results = \$query->with(...\$this->withRelations)
@@ -1145,7 +1143,7 @@ class {$controllerName} extends Controller
     public function show()
     {
         \$id = \$this->request->param('id');
-        \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFailByPk(\$id);
+        \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
         
         return {$modelName}Resource::make(\${$resourceName});
     }
@@ -1161,8 +1159,8 @@ class {$controllerName} extends Controller
         ]);
         
         try {
-            \$id = \$this->model->create(\$validated);
-            \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFailByPk(\$id);
+            \$id = {$modelName}::create(\$validated);
+            \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
             return \$this->created({$modelName}Resource::make(\${$resourceName}));
         } catch (\PDOException \$e) {
             \$this->databaseError('Failed to create {$resourceName}', \$e);
@@ -1183,8 +1181,8 @@ class {$controllerName} extends Controller
         ]);
         
         try {
-            \$this->model->update(\$id, \$validated);
-            \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFailByPk(\$id);
+            {$modelName}::update(\$id, \$validated);
+            \${$resourceName} = {$modelName}::find()->with(...\$this->withRelations)->findOrFail(\$id);
             return {$modelName}Resource::make(\${$resourceName});
         } catch (\PDOException \$e) {
             \$this->databaseError('Failed to update {$resourceName}', \$e);
@@ -1201,7 +1199,7 @@ class {$controllerName} extends Controller
         {$modelName}::findOrFail(\$id);
         
         try {
-            \$this->model->delete(\$id);
+            {$modelName}::delete(\$id);
             return \$this->noContent();
         } catch (\PDOException \$e) {
             \$this->databaseError('Failed to delete {$resourceName}', \$e);

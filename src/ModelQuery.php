@@ -264,10 +264,11 @@ class ModelQuery extends Query
 
     /**
      * Find a single record by Primary Key or throw 404 Exception
+     * Allows builder chaining: Product::find()->with(...)->findOrFail($id)
      * 
      * @throws \Exception When record is not found
      */
-    public function findOrFailByPk(int|string|array $id): array
+    public function findOrFail(int|string|array $id): array
     {
         $result = $this->findByPk($id);
         if ($result === null) {
