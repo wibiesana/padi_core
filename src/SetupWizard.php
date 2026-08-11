@@ -103,7 +103,7 @@ class SetupWizard
     private function banner(): void
     {
         $version = defined('Wibiesana\Padi\Core\Query::VERSION') ? Query::VERSION : '2.1.5';
-        $versionStr = str_pad("Version 2.1.5                             ║
+        $versionStr = str_pad("Version 2.1.6                             ║
 
         $banner = <<<BANNER
 
