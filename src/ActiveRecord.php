@@ -693,9 +693,17 @@ abstract class ActiveRecord
     }
 
     /**
-     * Create new record
+     * Create new record (Static Wrapper)
      */
-    public function create(array $data): int|string
+    public static function create(array $data): int|string
+    {
+        return (new static())->insertRecord($data);
+    }
+
+    /**
+     * Instance method to insert record
+     */
+    public function insertRecord(array $data): int|string
     {
         $data = $this->filterFillable($data);
 
@@ -732,9 +740,17 @@ abstract class ActiveRecord
     }
 
     /**
-     * Update record by ID
+     * Update record by ID (Static Wrapper)
      */
-    public function update(int|string|array $id, array $data): bool
+    public static function update(int|string|array $id, array $data): bool
+    {
+        return (new static())->updateRecord($id, $data);
+    }
+
+    /**
+     * Instance method to update record
+     */
+    public function updateRecord(int|string|array $id, array $data): bool
     {
         $data = $this->filterFillable($data);
 
@@ -911,9 +927,17 @@ abstract class ActiveRecord
     }
 
     /**
-     * Delete record by ID
+     * Delete record by ID (Static Wrapper)
      */
-    public function delete(int|string|array $id): bool
+    public static function delete(int|string|array $id): bool
+    {
+        return (new static())->deleteRecord($id);
+    }
+
+    /**
+     * Instance method to delete record
+     */
+    public function deleteRecord(int|string|array $id): bool
     {
         if (!$this->beforeDelete($id)) {
             return false;
