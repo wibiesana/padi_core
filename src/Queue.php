@@ -94,7 +94,7 @@ class Queue
      * - Worker exits after QUEUE_MAX_JOBS jobs (default: 1000) for memory reset
      *   (process supervisor, e.g., Supervisor or Docker, should auto-restart it)
      */
-    public static function work(string $queue = 'default'): void
+    public static function work(string $queue = 'default', bool $once = false, bool $stopWhenEmpty = false): void
     {
         self::initTable();
         $db          = Database::connection();
@@ -146,6 +146,10 @@ class Queue
 
                     $processedCount++;
 
+                    if ($once) {
+                        return;
+                    }
+
                     // Periodic GC: clean up circular references from job objects
                     if ($processedCount % $gcInterval === 0) {
                         gc_collect_cycles();
@@ -159,6 +163,10 @@ class Queue
                     }
                 } else {
                     $db->rollBack();
+                    if ($once || $stopWhenEmpty) {
+                        echo "No jobs available on queue: {$queue}\n";
+                        return;
+                    }
                     if ($sleepSeconds < 1.0) {
                         usleep((int)($sleepSeconds * 1000000));
                     } else {
@@ -171,6 +179,9 @@ class Queue
                     $db->rollBack();
                 }
                 Logger::error("Queue worker error: " . $e->getMessage());
+                if ($once || $stopWhenEmpty) {
+                    return;
+                }
                 if ($sleepSeconds < 1.0) {
                     usleep((int)($sleepSeconds * 1000000));
                 } else {

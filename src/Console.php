@@ -97,6 +97,10 @@ class Console
             case 'ga':
                 $this->generateCrudAll();
                 break;
+            case 'queue:work':
+            case 'queue':
+                $this->queueWork();
+                break;
             default:
                 echo "\e[31mUnknown command: {$command}\e[0m\n\n";
                 $this->showHelp();
@@ -133,6 +137,10 @@ class Console
         echo "  \e[32mg\e[0m <table_name>              Alias for generate:crud\n";
         echo "  \e[32mgenerate:crud-all\e[0m           Generate complete CRUD for ALL tables in database\n";
         echo "  \e[32mga\e[0m                         Alias for generate:crud-all\n";
+
+        echo "\n \e[33mqueue\e[0m\n";
+        echo "  \e[32mqueue:work\e[0m [queue]        Start processing jobs on the queue (--once, --stop-when-empty)\n";
+        echo "  \e[32mqueue\e[0m [queue]             Alias for queue:work\n";
     }
 
     private function serve(): void
@@ -470,6 +478,25 @@ PHP;
     {
         $wizard = new SetupWizard($this->baseDir);
         $wizard->run();
+    }
+
+    private function queueWork(): void
+    {
+        $queue = 'default';
+        $once = false;
+        $stopWhenEmpty = false;
+
+        foreach (array_slice($this->args, 2) as $arg) {
+            if ($arg === '--once') {
+                $once = true;
+            } elseif ($arg === '--stop-when-empty') {
+                $stopWhenEmpty = true;
+            } elseif (!str_starts_with($arg, '--')) {
+                $queue = $arg;
+            }
+        }
+
+        Queue::work($queue, $once, $stopWhenEmpty);
     }
 
     // =========================================================================
