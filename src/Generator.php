@@ -216,6 +216,10 @@ namespace {$namespace};
 
 use Wibiesana\Padi\Core\Resource;
 
+/**
+ * @method static static make(mixed $resource)
+ * @method static array collection(mixed $resource)
+ */
 class {$resourceName} extends Resource
 {
     public function toArray(\$request): array
@@ -1061,7 +1065,6 @@ PHP;
 namespace {$namespace};
 
 use Wibiesana\Padi\Core\Controller;
-use Wibiesana\Padi\Core\Request;
 use {$modelNamespace}\\{$modelName};
 use App\Resources\\{$modelName}Resource;
 

@@ -9,6 +9,9 @@ namespace Wibiesana\Padi\Core;
  * 
  * Similar to Laravel Resources or Yii Fields.
  * Transforms raw database arrays into clean API response shapes.
+ * 
+ * @method static static make(mixed $resource) Create a new resource instance
+ * @method static array collection(mixed $resource) Create a collection of resources
  */
 abstract class Resource implements \JsonSerializable
 {
