@@ -389,13 +389,48 @@ PHP;
             return $this->schemaCache[$tableName];
         }
         try {
-            $stmt = $this->db->query("DESCRIBE {$tableName}");
-            $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
-
+            $driver = DatabaseManager::getDriver();
             $schema = [];
-            foreach ($rows as $row) {
-                $schema[$row['Field']] = $row;
+
+            if ($driver === 'sqlite') {
+                $stmt = $this->db->query("PRAGMA table_info(" . $this->db->quote($tableName) . ")");
+                $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+                foreach ($rows as $row) {
+                    $isPk = (bool)($row['pk'] ?? false);
+                    $type = strtolower($row['type'] ?? 'text');
+                    $schema[$row['name']] = [
+                        'Field' => $row['name'],
+                        'Type' => $row['type'],
+                        'Null' => ($row['notnull'] ?? 0) ? 'NO' : 'YES',
+                        'Key' => $isPk ? 'PRI' : '',
+                        'Default' => $row['dflt_value'],
+                        'Extra' => ($isPk && str_contains($type, 'int')) ? 'auto_increment' : '',
+                    ];
+                }
+            } elseif (in_array($driver, ['pgsql', 'postgres', 'postgresql'], true)) {
+                $stmt = $this->db->prepare("
+                    SELECT column_name AS \"Field\", data_type AS \"Type\", is_nullable AS \"Null\", 
+                           column_default AS \"Default\"
+                    FROM information_schema.columns 
+                    WHERE table_name = :table AND table_schema = 'public'
+                ");
+                $stmt->execute(['table' => $tableName]);
+                $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+                foreach ($rows as $row) {
+                    $row['Key'] = '';
+                    $row['Extra'] = str_contains((string)($row['Default'] ?? ''), 'nextval') ? 'auto_increment' : '';
+                    $schema[$row['Field']] = $row;
+                }
+            } else {
+                $stmt = $this->db->query("DESCRIBE {$tableName}");
+                $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+                foreach ($rows as $row) {
+                    $schema[$row['Field']] = $row;
+                }
             }
+
             $this->schemaCache[$tableName] = $schema;
             return $schema;
         } catch (\Exception $e) {
@@ -532,22 +567,21 @@ PHP;
     {
         $table = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $modelName));
 
-        // Check if singular table exists first, then try plural
-        try {
-            $stmt = $this->db->query("SHOW TABLES LIKE '{$table}'");
-            $result = $stmt->fetch();
-            if ($result) {
-                return $table; // Singular table exists
-            }
-        } catch (\Exception $e) {
-            // Continue to try plural
+        // Check if singular table exists in database table list first, then try plural
+        $allTables = array_map('strtolower', $this->getAllTables());
+        if (in_array($table, $allTables, true)) {
+            return $table;
         }
 
         // Try plural version
         if (substr($table, -1) !== 's') {
-            $table .= 's';
+            $plural = $table . 's';
+            if (in_array($plural, $allTables, true)) {
+                return $plural;
+            }
         }
-        return $table;
+
+        return substr($table, -1) !== 's' ? $table . 's' : $table;
     }
 
     /**
@@ -593,21 +627,59 @@ PHP;
         if (isset($this->foreignKeysCache[$tableName])) {
             return $this->foreignKeysCache[$tableName];
         }
-        $sql = "
-            SELECT 
-                COLUMN_NAME, 
-                REFERENCED_TABLE_NAME, 
-                REFERENCED_COLUMN_NAME 
-            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
-            WHERE TABLE_SCHEMA = DATABASE() 
-              AND TABLE_NAME = :table 
-              AND REFERENCED_TABLE_NAME IS NOT NULL
-        ";
 
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute(['table' => $tableName]);
-        $this->foreignKeysCache[$tableName] = $stmt->fetchAll(\PDO::FETCH_ASSOC);
-        return $this->foreignKeysCache[$tableName];
+        try {
+            $driver = DatabaseManager::getDriver();
+
+            if ($driver === 'sqlite') {
+                $stmt = $this->db->query("PRAGMA foreign_key_list(" . $this->db->quote($tableName) . ")");
+                $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+                $fks = [];
+                foreach ($rows as $row) {
+                    $fks[] = [
+                        'COLUMN_NAME' => $row['from'],
+                        'REFERENCED_TABLE_NAME' => $row['table'],
+                        'REFERENCED_COLUMN_NAME' => $row['to'],
+                    ];
+                }
+                $this->foreignKeysCache[$tableName] = $fks;
+                return $fks;
+            } elseif (in_array($driver, ['pgsql', 'postgres', 'postgresql'], true)) {
+                $sql = "
+                    SELECT 
+                        kcu.column_name AS \"COLUMN_NAME\", 
+                        ccu.table_name AS \"REFERENCED_TABLE_NAME\", 
+                        ccu.column_name AS \"REFERENCED_COLUMN_NAME\" 
+                    FROM information_schema.table_constraints AS tc 
+                    JOIN information_schema.key_column_usage AS kcu 
+                      ON tc.constraint_name = kcu.constraint_name
+                    JOIN information_schema.constraint_column_usage AS ccu 
+                      ON ccu.constraint_name = tc.constraint_name
+                    WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = :table
+                ";
+                $stmt = $this->db->prepare($sql);
+                $stmt->execute(['table' => $tableName]);
+                $this->foreignKeysCache[$tableName] = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+                return $this->foreignKeysCache[$tableName];
+            } else {
+                $sql = "
+                    SELECT 
+                        COLUMN_NAME, 
+                        REFERENCED_TABLE_NAME, 
+                        REFERENCED_COLUMN_NAME 
+                    FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
+                    WHERE TABLE_SCHEMA = DATABASE() 
+                      AND TABLE_NAME = :table 
+                      AND REFERENCED_TABLE_NAME IS NOT NULL
+                ";
+                $stmt = $this->db->prepare($sql);
+                $stmt->execute(['table' => $tableName]);
+                $this->foreignKeysCache[$tableName] = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+                return $this->foreignKeysCache[$tableName];
+            }
+        } catch (\Exception $e) {
+            return [];
+        }
     }
 
     /**
@@ -667,8 +739,16 @@ PHP;
         if (!empty($this->tablesCache)) {
             return $this->tablesCache;
         }
+
         try {
-            $stmt = $this->db->query("SHOW TABLES");
+            $driver = DatabaseManager::getDriver();
+            $sql = match ($driver) {
+                'sqlite' => "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+                'pgsql', 'postgres', 'postgresql' => "SELECT tablename FROM pg_tables WHERE schemaname='public'",
+                default => "SHOW TABLES",
+            };
+
+            $stmt = $this->db->query($sql);
             $this->tablesCache = $stmt->fetchAll(\PDO::FETCH_COLUMN);
             return $this->tablesCache;
         } catch (\Exception $e) {
@@ -685,12 +765,34 @@ PHP;
         if (isset($this->columnUniqueCache[$cacheKey])) {
             return $this->columnUniqueCache[$cacheKey];
         }
+
         try {
-            $stmt = $this->db->prepare("SHOW INDEX FROM {$tableName} WHERE Column_name = :column AND Non_unique = 0");
-            $stmt->execute(['column' => $column]);
-            $res = (bool)$stmt->fetch();
-            $this->columnUniqueCache[$cacheKey] = $res;
-            return $res;
+            $driver = DatabaseManager::getDriver();
+
+            if ($driver === 'sqlite') {
+                $stmt = $this->db->query("PRAGMA index_list(" . $this->db->quote($tableName) . ")");
+                $indexes = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+                foreach ($indexes as $idx) {
+                    if (!empty($idx['unique'])) {
+                        $infoStmt = $this->db->query("PRAGMA index_info(" . $this->db->quote($idx['name']) . ")");
+                        $cols = $infoStmt->fetchAll(\PDO::FETCH_ASSOC);
+                        foreach ($cols as $colInfo) {
+                            if ($colInfo['name'] === $column) {
+                                $this->columnUniqueCache[$cacheKey] = true;
+                                return true;
+                            }
+                        }
+                    }
+                }
+                $this->columnUniqueCache[$cacheKey] = false;
+                return false;
+            } else {
+                $stmt = $this->db->prepare("SHOW INDEX FROM {$tableName} WHERE Column_name = :column AND Non_unique = 0");
+                $stmt->execute(['column' => $column]);
+                $res = (bool)$stmt->fetch();
+                $this->columnUniqueCache[$cacheKey] = $res;
+                return $res;
+            }
         } catch (\Exception $e) {
             return false;
         }
