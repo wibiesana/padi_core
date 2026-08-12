@@ -370,9 +370,9 @@ BANNER;
                     2 => 'Yes, generate with real-time ORM hooks'
                 ], 1);
 
-                $realtimeOpt = '';
+                $realtimeOpt = ' --realtime=false';
                 if ($realtimeChoice == 2) {
-                    $realtimeOpt = ' --realtime';
+                    $realtimeOpt = ' --realtime=true';
                     $syncChoice = $this->choice("Should real-time broadcasts be processed asynchronously via Queue?", [
                         1 => 'Yes, use background Queue (asynchronous)',
                         2 => 'No, publish directly (synchronous)'
@@ -411,9 +411,9 @@ BANNER;
                         2 => 'Yes, generate with real-time ORM hooks'
                     ], 1);
 
-                    $realtimeOpt = '';
+                    $realtimeOpt = ' --realtime=false';
                     if ($realtimeChoice == 2) {
-                        $realtimeOpt = ' --realtime';
+                        $realtimeOpt = ' --realtime=true';
                         $syncChoice = $this->choice("Should real-time broadcasts be processed asynchronously via Queue?", [
                             1 => 'Yes, use background Queue (asynchronous)',
                             2 => 'No, publish directly (synchronous)'
