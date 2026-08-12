@@ -246,6 +246,18 @@ class DatabaseManager
     }
 
     /**
+     * Reset all active connections and configuration cache
+     */
+    public static function reset(): void
+    {
+        self::$connections = [];
+        self::$config = null;
+        self::$defaultConnection = null;
+        self::$lastDatabaseError = null;
+        self::$databaseErrors = [];
+    }
+
+    /**
      * Set default connection name
      */
     public static function setDefaultConnection(string $name): void

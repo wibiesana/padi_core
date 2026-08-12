@@ -120,6 +120,9 @@ BANNER;
 
     private function updateEnv(string $key, string $value): bool
     {
+        $_ENV[$key] = $value;
+        putenv("{$key}={$value}");
+
         $envFile = $this->projectRoot . '/.env';
 
         if (!file_exists($envFile)) {
@@ -141,7 +144,12 @@ BANNER;
             $content .= PHP_EOL . $replacement;
         }
 
-        return file_put_contents($envFile, $content) !== false;
+        $saved = file_put_contents($envFile, $content) !== false;
+        if (class_exists(DatabaseManager::class)) {
+            DatabaseManager::reset();
+        }
+
+        return $saved;
     }
 
     private function runCommand(string $command, string $description = ''): bool
@@ -233,10 +241,14 @@ BANNER;
             if ($selectedDriver === 'sqlite') {
                 $dbPath = $this->ask("SQLite database path", "database/database.sqlite");
 
-                // Create database directory
-                $dbDir = dirname($this->projectRoot . '/' . $dbPath);
+                // Create database directory and file
+                $fullDbPath = $this->projectRoot . '/' . ltrim($dbPath, '/\\');
+                $dbDir = dirname($fullDbPath);
                 if (!is_dir($dbDir)) {
                     mkdir($dbDir, 0755, true);
+                }
+                if (!file_exists($fullDbPath)) {
+                    touch($fullDbPath);
                 }
 
                 $this->success("SQLite will use: $dbPath");
@@ -273,7 +285,8 @@ BANNER;
                 if (!defined('PADI_ROOT')) {
                     define('PADI_ROOT', $this->projectRoot);
                 }
-                Env::load($this->projectRoot . '/.env');
+                Env::load($this->projectRoot . '/.env', true);
+                DatabaseManager::reset();
 
                 $db = DatabaseManager::connection();
                 $db->query('SELECT 1');

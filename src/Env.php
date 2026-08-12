@@ -18,9 +18,9 @@ class Env
     /**
      * Load .env file
      */
-    public static function load(string $path): void
+    public static function load(string $path, bool $forceReload = false): void
     {
-        if (self::$loaded || !file_exists($path)) {
+        if ((self::$loaded && !$forceReload) || !file_exists($path)) {
             return;
         }
 
@@ -63,8 +63,7 @@ class Env
                 }
             }
 
-            // Only set if not already defined (system env takes precedence)
-            if (!array_key_exists($name, $_ENV)) {
+            if ($forceReload || !array_key_exists($name, $_ENV)) {
                 $_ENV[$name] = $value;
                 putenv("{$name}={$value}");
             }
