@@ -243,7 +243,7 @@ use Wibiesana\Padi\Core\Resource;
 
 class {$resourceName} extends Resource
 {
-    public function toArray(\$request): array
+    public function toArray(mixed \$request): array
     {
         return [
 {$fieldsStr}{$relationsStr}{$flattenedStr}
