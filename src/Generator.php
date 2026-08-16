@@ -47,6 +47,12 @@ class Generator
      */
     public function generateModel(string $tableName, array $options = []): bool
     {
+        // Normalize input: if PascalCase model name is given (e.g. 'Article', 'JobVacancy'),
+        // convert it to the actual DB table name before proceeding.
+        if (ctype_upper($tableName[0])) {
+            $tableName = $this->modelNameToTableName($tableName);
+        }
+
         // Skip protected tables unless force flag is set
         if ($this->isProtectedTable($tableName) && !($options['force'] ?? false)) {
             echo "⚠️  Table '{$tableName}' is protected. Skipping model generation.\n";
@@ -62,6 +68,13 @@ class Generator
         // Get table columns from database
         if (empty($fillable)) {
             $fillable = $this->getTableColumns($tableName);
+        }
+
+        // Fallback: if still empty (table not yet migrated / DB unreachable),
+        // parse the existing Base Model file to keep fillable intact
+        if (empty($fillable)) {
+            $fallbackSchema = $this->buildSchemaFromModelFillable($modelName);
+            $fillable = array_keys($fallbackSchema);
         }
 
         // Auto-hide sensitive fields
@@ -115,7 +128,13 @@ class Generator
         $modelNamespace = $options['model_namespace'] ?? 'App\\Models';
 
         // 1. Get schema and validation rules
+        //    Fallback to base model fillable when DB schema is unavailable
         $schema = $this->getTableSchema($tableName);
+        if (empty($schema)) {
+            echo "⚠️  Schema for table '{$tableName}' is empty — DB unreachable or table not yet migrated.\n";
+            echo "   Falling back to fillable fields from Base Model file.\n";
+            $schema = $this->buildSchemaFromModelFillable($modelName);
+        }
         $validationRules = $this->generateValidationRules($schema, $tableName);
 
         // 2. Generate Base Controller (Always overwrite)
@@ -150,7 +169,13 @@ class Generator
         $namespace = $options['resource_namespace'] ?? 'App\\Resources';
 
         // 1. Get columns
+        //    Fallback to base model fillable when DB schema is unavailable
         $columns = $this->getTableColumns($tableName);
+        if (empty($columns)) {
+            echo "⚠️  Columns for table '{$tableName}' not found — falling back to Base Model fillable.\n";
+            $fallbackSchema = $this->buildSchemaFromModelFillable($modelName);
+            $columns = array_keys($fallbackSchema);
+        }
 
         // Ensure Primary Key(s) are included in Resource
         $primaryKey = $this->detectPrimaryKey($tableName);
@@ -255,12 +280,41 @@ PHP;
      */
     public function generateCrud(string $tableName, array $options = []): bool
     {
+        // Normalize input: if PascalCase model name is given (e.g. 'Article', 'JobVacancy'),
+        // convert it to the actual DB table name (e.g. 'article', 'job_vacancies').
+        if (ctype_upper($tableName[0])) {
+            $tableName = $this->modelNameToTableName($tableName);
+        }
+
         // Skip protected tables unless force flag is set
         if ($this->isProtectedTable($tableName) && !($options['force'] ?? false)) {
             echo "⚠️  Table '{$tableName}' is a protected core table. Skipping CRUD generation.\n";
             echo "   Protected tables: " . implode(', ', $this->protectedTables) . "\n";
             echo "   Use --force flag to regenerate (not recommended).\n\n";
             return false;
+        }
+
+        // Validate table exists in DB (only when DB is reachable)
+        $allTables = $this->getAllTables();
+        if (!empty($allTables)) {
+            $allTablesLower = array_map('strtolower', $allTables);
+            if (!in_array(strtolower($tableName), $allTablesLower, true)) {
+                echo "❌  Table '{$tableName}' does not exist in the database.\n";
+
+                // Suggest similar table names
+                $suggestions = array_filter($allTablesLower, fn($t) =>
+                    str_contains($t, strtolower($tableName)) ||
+                    str_contains(strtolower($tableName), $t) ||
+                    levenshtein($t, strtolower($tableName)) <= 3
+                );
+                if (!empty($suggestions)) {
+                    echo "   Did you mean: " . implode(', ', $suggestions) . "?\n";
+                }
+                echo "   Use 'php padi ga' to see all available tables.\n\n";
+                return false;
+            }
+        } else {
+            echo "⚠️  Cannot connect to database \u2014 proceeding in offline mode (fallback from Base Model).\n";
         }
 
         echo "Generating CRUD for table: {$tableName}\n";
@@ -451,7 +505,16 @@ PHP;
 
         $pks    = $this->detectPrimaryKey($tableName);
         $pkList = is_array($pks) ? $pks : [$pks];
-        $exclude = array_merge(['created_at', 'updated_at', 'deleted_at', 'created_by', 'updated_by'], $pkList);
+
+        // Only exclude auto-increment PKs (e.g. single integer PK).
+        // Composite PKs in pivot tables are FK columns that MUST be validated.
+        $autoIncrementPks = [];
+        foreach ($pkList as $pk) {
+            if (strpos($schema[$pk]['Extra'] ?? '', 'auto_increment') !== false) {
+                $autoIncrementPks[] = $pk;
+            }
+        }
+        $exclude = array_merge(['created_at', 'updated_at', 'deleted_at', 'created_by', 'updated_by'], $autoIncrementPks);
 
         foreach ($schema as $column => $info) {
             if (in_array($column, $exclude)) continue;
@@ -561,52 +624,34 @@ PHP;
     }
 
     /**
-     * Convert Model name to table name
+     * Convert Model name to table name.
+     * Simply converts PascalCase to snake_case — no pluralization.
+     * Table name is used exactly as-is from the DB.
+     * e.g. 'Companies' → 'companies', 'BuahMangis' → 'buah_mangis'
      */
     private function modelNameToTableName(string $modelName): string
     {
         $table = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $modelName));
 
-        // Check if singular table exists in database table list first, then try plural
+        // Verify against actual DB table list (exact match only, no guessing)
         $allTables = array_map('strtolower', $this->getAllTables());
         if (in_array($table, $allTables, true)) {
             return $table;
         }
 
-        // Try plural version
-        if (substr($table, -1) !== 's') {
-            $plural = $table . 's';
-            if (in_array($plural, $allTables, true)) {
-                return $plural;
-            }
-        }
-
-        return substr($table, -1) !== 's' ? $table . 's' : $table;
+        // Return snake_case as-is — let the user fix the name if it doesn't match
+        return $table;
     }
 
     /**
-     * Convert table name to Model name
+     * Convert table name to Model name.
+     * Simply converts snake_case to PascalCase — no singularization.
+     * Table name is preserved exactly, giving users full freedom over naming.
+     * e.g. 'companies' → 'Companies', 'buah_mangis' → 'BuahMangis'
      */
     private function tableNameToModelName(string $tableName): string
     {
-        // Handle plural table names more carefully
-        // Only remove 's' if it's actually a plural form, not part of a word like 'class'
-        $singular = $tableName;
-
-        // Common plural patterns to handle
-        if (preg_match('/(.+)ies$/', $tableName, $matches)) {
-            // countries -> country
-            $singular = $matches[1] . 'y';
-        } elseif (preg_match('/(.+)ses$/', $tableName, $matches)) {
-            // classes -> class, addresses -> address
-            $singular = $matches[1] . 's';
-        } elseif (preg_match('/(.+[^s])s$/', $tableName, $matches)) {
-            // users -> user, posts -> post (but not class -> clas)
-            $singular = $matches[1];
-        }
-
-        // Convert snake_case to PascalCase
-        return str_replace('_', '', ucwords($singular, '_'));
+        return str_replace('_', '', ucwords($tableName, '_'));
     }
 
     /**
@@ -754,6 +799,82 @@ PHP;
         } catch (\Exception $e) {
             return [];
         }
+    }
+
+    /**
+     * Build a synthetic schema array from the Base Model's $fillable declaration.
+     * Used as fallback when the DB is not reachable during code generation.
+     *
+     * Returns an array keyed by column name with minimal schema info:
+     *   ['Field' => col, 'Type' => 'varchar(255)', 'Null' => 'YES', 'Key' => '', 'Default' => null, 'Extra' => '']
+     *
+     * Composite-PK columns (found in $primaryKey array) are given Key = 'PRI'.
+     * FK columns (_id suffix) are given Type = 'int(11)' and Null = 'NO'.
+     */
+    private function buildSchemaFromModelFillable(string $modelName): array
+    {
+        $baseModelPath = $this->baseDir . '/app/Models/Base/' . $modelName . '.php';
+        if (!file_exists($baseModelPath)) {
+            return [];
+        }
+
+        $content = file_get_contents($baseModelPath);
+
+        // ── Extract $fillable ─────────────────────────────────────────────
+        $fillable = [];
+        if (preg_match('/\$fillable\s*=\s*\[([^\]]*)\]/s', $content, $m)) {
+            preg_match_all("/'([^']+)'/", $m[1], $cols);
+            $fillable = $cols[1] ?? [];
+        }
+
+        if (empty($fillable)) {
+            return [];
+        }
+
+        // ── Extract $primaryKey ───────────────────────────────────────────
+        $pkList = [];
+        if (preg_match('/\$primaryKey\s*=\s*\[([^\]]*)\]/s', $content, $m)) {
+            preg_match_all("/'([^']+)'/", $m[1], $pks);
+            $pkList = $pks[1] ?? [];
+        } elseif (preg_match("/\\\$primaryKey\s*=\s*'([^']+)'/", $content, $m)) {
+            $pkList = [$m[1]];
+        }
+
+        // ── Build synthetic schema ────────────────────────────────────────
+        $schema = [];
+        foreach ($fillable as $col) {
+            $isPk  = in_array($col, $pkList, true);
+            $isFk  = str_ends_with($col, '_id');
+            $isDate = str_contains($col, 'date') || str_contains($col, '_at');
+            $isText = str_contains($col, 'description') || str_contains($col, 'content')
+                || str_contains($col, 'notes')       || str_contains($col, 'qualifications')
+                || str_contains($col, 'address')     || str_contains($col, 'body');
+
+            if ($isFk || $isPk) {
+                $type = 'int(11)';
+                $null = 'NO';
+            } elseif ($isDate) {
+                $type = 'date';
+                $null = 'YES';
+            } elseif ($isText) {
+                $type = 'text';
+                $null = 'YES';
+            } else {
+                $type = 'varchar(255)';
+                $null = 'YES';
+            }
+
+            $schema[$col] = [
+                'Field'   => $col,
+                'Type'    => $type,
+                'Null'    => $null,
+                'Key'     => $isPk ? 'PRI' : ($isFk ? 'MUL' : ''),
+                'Default' => null,
+                'Extra'   => '',   // never auto_increment in fallback
+            ];
+        }
+
+        return $schema;
     }
 
     /**
@@ -1541,7 +1662,7 @@ PHP;
         file_put_contents($filePath, $jsonContent);
 
         echo "✓ API Collection created at {$filePath}\n";
-        echo "  Import this file to Postman or Insomnia to test the API endpoints\n";
+        echo "  Import this file to your favorite REST client to test the API endpoints\n";
 
         return true;
     }
