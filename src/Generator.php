@@ -55,7 +55,8 @@ class Generator
 
         // Skip protected tables unless force flag is set
         if ($this->isProtectedTable($tableName) && !($options['force'] ?? false)) {
-            echo "⚠️  Table '{$tableName}' is protected. Skipping model generation.\n";
+            echo "⚠️  Table '{$tableName}' is a protected core table. Skipping model generation.\n";
+            echo "   (Default model exists: app/Models/" . $this->tableNameToModelName($tableName) . ".php)\n";
             echo "   Use --force flag to regenerate (not recommended).\n";
             return false;
         }
@@ -118,7 +119,8 @@ class Generator
         // Check if this is a protected model
         $tableName = $this->modelNameToTableName($modelName);
         if ($this->isProtectedTable($tableName) && !($options['force'] ?? false)) {
-            echo "⚠️  Model '{$modelName}' is for protected table. Skipping controller generation.\n";
+            echo "⚠️  Model '{$modelName}' is a protected core model. Skipping controller generation.\n";
+            echo "   (Default controller exists: app/Controllers/{$modelName}Controller.php)\n";
             echo "   Use --force flag to regenerate (not recommended).\n";
             return false;
         }
@@ -165,6 +167,14 @@ class Generator
     public function generateResource(string $modelName, array $options = []): bool
     {
         $tableName = $this->modelNameToTableName($modelName);
+
+        // Skip protected tables unless force flag is set
+        if ($this->isProtectedTable($tableName) && !($options['force'] ?? false)) {
+            echo "⚠️  Model '{$modelName}' is a protected core model. Skipping resource generation.\n";
+            echo "   Use --force flag to regenerate (not recommended).\n";
+            return false;
+        }
+
         $resourceName = $modelName . 'Resource';
         $namespace = $options['resource_namespace'] ?? 'App\\Resources';
 

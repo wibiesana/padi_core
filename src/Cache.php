@@ -560,17 +560,61 @@ class Cache
     {
         self::init();
 
+        // Redis: INCRBY is natively atomic
         if (self::$driver === 'redis') {
             return self::redisOp(fn () => (int) self::$redis->incrby($key, $step), 'increment', false);
         }
 
-        $current = self::get($key, 0);
-        if (!is_numeric($current)) {
+        // File driver: use exclusive lock for atomic read-modify-write
+        // Prevents race condition between concurrent processes on shared hosting
+        $file = self::filePath($key);
+        $dir  = dirname($file);
+        if (!is_dir($dir)) {
+            mkdir($dir, 0750, true);
+        }
+
+        $fp = @fopen($file, 'c+');
+        if ($fp === false) {
             return false;
         }
 
-        $new = (int) $current + $step;
-        self::set($key, $new);
+        if (!flock($fp, LOCK_EX)) {
+            fclose($fp);
+            return false;
+        }
+
+        try {
+            $raw  = stream_get_contents($fp);
+            $data = $raw !== '' ? json_decode($raw, true) : null;
+
+            // Check expiry
+            if (is_array($data) && isset($data['expires']) && $data['expires'] > 0 && $data['expires'] < time()) {
+                $data = null; // treat as expired
+            }
+
+            $current = is_array($data) && isset($data['value']) ? $data['value'] : 0;
+            if (!is_numeric($current)) {
+                return false;
+            }
+
+            $new     = (int) $current + $step;
+            $expires = is_array($data) ? ($data['expires'] ?? 0) : 0;
+            $payload = json_encode(
+                ['key' => $key, 'value' => $new, 'expires' => $expires],
+                self::JSON_FLAGS,
+            );
+
+            ftruncate($fp, 0);
+            rewind($fp);
+            fwrite($fp, $payload);
+        } finally {
+            flock($fp, LOCK_UN);
+            fclose($fp);
+        }
+
+        // Update L1 memory cache
+        self::setMemory($key, $new, $expires);
+
         return $new;
     }
 

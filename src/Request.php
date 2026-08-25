@@ -23,6 +23,14 @@ class Request
     private array $files = [];
     private array $headers = [];
     private string $method;
+
+    /**
+     * Parsed trusted proxy list — cached once per process lifecycle.
+     * Worker-mode safe: resolved on first ip() call, reused for all subsequent requests.
+     *
+     * @var list<string>|null
+     */
+    private static ?array $trustedProxies = null;
     private string $uri;
     private ?string $rawInput = null;
     public ?object $user = null;
@@ -255,37 +263,137 @@ class Request
 
     /**
      * Get client IP address
-     * 
-     * Supports proxy headers (Cloudflare, nginx, load balancers).
-     * Note: X-Forwarded-For trust should be configured at the reverse proxy level.
+     *
+     * Only trusts proxy headers (CF-Connecting-IP, X-Real-IP, X-Forwarded-For)
+     * when the direct connection (REMOTE_ADDR) is a known trusted proxy.
+     * This prevents clients from spoofing their IP via forged forwarded headers.
+     *
+     * Configure trusted proxies via TRUSTED_PROXIES env var (comma-separated):
+     *   TRUSTED_PROXIES=127.0.0.1,10.0.0.0/8,::1
+     *
+     * Cloudflare IP ranges are trusted automatically when CF-Connecting-IP is present
+     * only if REMOTE_ADDR is already a trusted proxy (your edge server).
      */
     public function ip(): string
     {
-        // Priority order: most specific proxy headers first
-        $headers = [
-            'HTTP_CF_CONNECTING_IP', // Cloudflare
-            'HTTP_X_REAL_IP',        // Nginx proxy
-            'HTTP_X_FORWARDED_FOR',  // Standard proxy header (may contain chain)
-            'REMOTE_ADDR'            // Direct connection
-        ];
+        $remoteAddr = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 
-        foreach ($headers as $header) {
-            $value = $_SERVER[$header] ?? '';
-            if ($value === '') continue;
+        // Only read proxy headers if the direct connection is from a trusted proxy
+        if ($this->isTrustedProxy($remoteAddr)) {
+            $proxyHeaders = [
+                'HTTP_CF_CONNECTING_IP', // Cloudflare (most specific)
+                'HTTP_X_REAL_IP',        // Nginx proxy
+                'HTTP_X_FORWARDED_FOR',  // Standard (may contain chain)
+            ];
 
-            // X-Forwarded-For can contain "client, proxy1, proxy2"
-            // Use the FIRST (leftmost) IP = original client
-            if (str_contains($value, ',')) {
-                $value = trim(explode(',', $value, 2)[0]);
+            foreach ($proxyHeaders as $header) {
+                $value = $_SERVER[$header] ?? '';
+                if ($value === '') continue;
+
+                // X-Forwarded-For: "client, proxy1, proxy2" — use leftmost (original client)
+                if (str_contains($value, ',')) {
+                    $value = trim(explode(',', $value, 2)[0]);
+                }
+
+                if (filter_var($value, FILTER_VALIDATE_IP)) {
+                    return $value;
+                }
             }
+        } else {
+            // Development warning: proxy headers are present but REMOTE_ADDR is not trusted.
+            // If this happens in production, rate limiting will use the proxy IP instead of
+            // the real client IP — causing ALL users behind this proxy to share one rate limit.
+            // Fix: add REMOTE_ADDR to TRUSTED_PROXIES in your .env.
+            // e.g. TRUSTED_PROXIES=127.0.0.1,::1,{$remoteAddr}
+            if (Env::get('APP_ENV', 'production') === 'development') {
+                $hasProxyHeader = isset($_SERVER['HTTP_X_FORWARDED_FOR'])
+                    || isset($_SERVER['HTTP_X_REAL_IP'])
+                    || isset($_SERVER['HTTP_CF_CONNECTING_IP']);
 
-            // Validate IP format
-            if (filter_var($value, FILTER_VALIDATE_IP)) {
-                return $value;
+                if ($hasProxyHeader) {
+                    error_log(
+                        "[padi] WARNING: Proxy headers detected but REMOTE_ADDR ({$remoteAddr}) " .
+                        "is not in TRUSTED_PROXIES. ip() is returning the proxy IP, not the real client IP. " .
+                        "Rate limiting will be inaccurate. " .
+                        "Add to .env: TRUSTED_PROXIES=127.0.0.1,::1,{$remoteAddr}"
+                    );
+                }
             }
         }
 
-        return '0.0.0.0';
+
+        // Fallback: use direct connection IP (safe, cannot be spoofed)
+        return filter_var($remoteAddr, FILTER_VALIDATE_IP) ? $remoteAddr : '0.0.0.0';
+    }
+
+    /**
+     * Check if an IP address is in the trusted proxies list.
+     *
+     * Configured via TRUSTED_PROXIES env var (comma-separated IPs or CIDR ranges).
+     * Defaults to localhost addresses for safety.
+     *
+     * The parsed list is cached in a static property so the env string is only
+     * parsed once per process lifecycle — optimal for FrankenPHP worker mode.
+     *
+     * Examples:
+     *   TRUSTED_PROXIES=127.0.0.1,::1
+     *   TRUSTED_PROXIES=127.0.0.1,10.0.0.1,172.16.0.0/12
+     */
+    private function isTrustedProxy(string $ip): bool
+    {
+        // Parse once per process; ??= skips re-parsing on subsequent requests
+        self::$trustedProxies ??= array_values(array_filter(
+            array_map('trim', explode(',', Env::get('TRUSTED_PROXIES', '127.0.0.1,::1'))),
+            static fn(string $p): bool => $p !== ''
+        ));
+
+        foreach (self::$trustedProxies as $proxy) {
+            // Exact match
+            if ($proxy === $ip) {
+                return true;
+            }
+
+            // CIDR range match (e.g. 10.0.0.0/8)
+            if (str_contains($proxy, '/') && $this->ipInCidr($ip, $proxy)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an IP is within a CIDR range.
+     * Supports both IPv4 (10.0.0.0/8) and IPv6 (::1/128).
+     */
+    private function ipInCidr(string $ip, string $cidr): bool
+    {
+        [$subnet, $bits] = explode('/', $cidr, 2);
+        $bits = (int) $bits;
+
+        // IPv6
+        if (str_contains($ip, ':')) {
+            $ipBin     = inet_pton($ip);
+            $subnetBin = inet_pton($subnet);
+            if ($ipBin === false || $subnetBin === false) return false;
+
+            $fullBytes = intdiv($bits, 8);
+            $remBits   = $bits % 8;
+
+            if (substr($ipBin, 0, $fullBytes) !== substr($subnetBin, 0, $fullBytes)) return false;
+            if ($remBits === 0) return true;
+
+            $mask = 0xFF & (0xFF << (8 - $remBits));
+            return (ord($ipBin[$fullBytes]) & $mask) === (ord($subnetBin[$fullBytes]) & $mask);
+        }
+
+        // IPv4
+        $ipLong     = ip2long($ip);
+        $subnetLong = ip2long($subnet);
+        if ($ipLong === false || $subnetLong === false) return false;
+
+        $mask = $bits > 0 ? ~((1 << (32 - $bits)) - 1) : 0;
+        return ($ipLong & $mask) === ($subnetLong & $mask);
     }
 
     /**
