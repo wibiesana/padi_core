@@ -312,10 +312,12 @@ PHP;
                 echo "❌  Table '{$tableName}' does not exist in the database.\n";
 
                 // Suggest similar table names
-                $suggestions = array_filter($allTablesLower, fn($t) =>
+                $suggestions = array_filter(
+                    $allTablesLower,
+                    fn($t) =>
                     str_contains($t, strtolower($tableName)) ||
-                    str_contains(strtolower($tableName), $t) ||
-                    levenshtein($t, strtolower($tableName)) <= 3
+                        str_contains(strtolower($tableName), $t) ||
+                        levenshtein($t, strtolower($tableName)) <= 3
                 );
                 if (!empty($suggestions)) {
                     echo "   Did you mean: " . implode(', ', $suggestions) . "?\n";
@@ -635,12 +637,17 @@ PHP;
 
     /**
      * Convert Model name to table name.
-     * Simply converts PascalCase to snake_case — no pluralization.
-     * Table name is used exactly as-is from the DB.
-     * e.g. 'Companies' → 'companies', 'BuahMangis' → 'buah_mangis'
+     * Checks special mappings (e.g. 'User' -> 'users'), otherwise
+     * converts PascalCase to snake_case.
+     * e.g. 'User' → 'users', 'Companies' → 'companies', 'BuahMangis' → 'buah_mangis'
      */
     private function modelNameToTableName(string $modelName): string
     {
+        $specialModelToTable = array_flip($this->specialTableToModel);
+        if (isset($specialModelToTable[$modelName])) {
+            return $specialModelToTable[$modelName];
+        }
+
         $table = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $modelName));
 
         // Verify against actual DB table list (exact match only, no guessing)
@@ -654,13 +661,26 @@ PHP;
     }
 
     /**
+     * Map of special/core tables to model names.
+     */
+    private array $specialTableToModel = [
+        'users' => 'User',
+        'password_resets' => 'PasswordReset',
+    ];
+
+    /**
      * Convert table name to Model name.
-     * Simply converts snake_case to PascalCase — no singularization.
-     * Table name is preserved exactly, giving users full freedom over naming.
-     * e.g. 'companies' → 'Companies', 'buah_mangis' → 'BuahMangis'
+     * Checks special mappings (e.g. 'users' -> 'User'), otherwise
+     * converts snake_case to PascalCase.
+     * e.g. 'users' → 'User', 'companies' → 'Companies', 'buah_mangis' → 'BuahMangis'
      */
     private function tableNameToModelName(string $tableName): string
     {
+        $lower = strtolower($tableName);
+        if (isset($this->specialTableToModel[$lower])) {
+            return $this->specialTableToModel[$lower];
+        }
+
         return str_replace('_', '', ucwords($tableName, '_'));
     }
 

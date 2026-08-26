@@ -301,9 +301,17 @@ abstract class ActiveRecord
                 $columnsOverride = $config['columns'];
                 $nestedRelations = $config['nested'];
 
-                // Collect IDs
-                $ids = array_column($results, $relationConfig['local_key']);
-                $ids = array_filter(array_unique($ids)); // Optimization: Unique IDs only
+                // Collect IDs safely (handle scalar, non-empty, and composite/array local keys)
+                $localKey = $relationConfig['local_key'];
+                if (is_array($localKey)) {
+                    // Composite key: not supported for simple IN query eager load, skip
+                    continue;
+                }
+
+                $ids = array_column($results, $localKey);
+                // Filter only scalar values (int, string) to prevent "Array to string conversion" if already loaded as array/relation
+                $scalarIds = array_filter($ids, static fn($id): bool => is_scalar($id) && $id !== '');
+                $ids = array_values(array_unique($scalarIds)); // Optimization: Unique IDs only
 
                 if (empty($ids)) continue;
 
