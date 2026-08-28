@@ -42,6 +42,7 @@ class Query
     /** @var string|callable|null */
     protected mixed $indexBy = null;
     protected array $union = [];
+    protected ?string $lock = null;
 
     public function __construct(?string $connection = null)
     {
@@ -80,6 +81,7 @@ class Query
         $this->distinct = false;
         $this->indexBy = null;
         $this->union = [];
+        $this->lock = null;
         return $this;
     }
 
@@ -208,6 +210,34 @@ class Query
     public function whereNotIn(string $column, array $values): self
     {
         return $this->andWhere([$column, 'NOT IN', $values]);
+    }
+
+    /**
+     * Add WHERE NOT condition (replaces or negates condition)
+     *
+     * @example
+     *   ->whereNot(['status' => 'banned'])
+     *   // → WHERE NOT (status = 'banned')
+     */
+    public function whereNot(string|array $condition, array $params = []): self
+    {
+        return $this->where(['NOT', $condition], $params);
+    }
+
+    /**
+     * Add AND WHERE NOT condition
+     */
+    public function andWhereNot(string|array $condition, array $params = []): self
+    {
+        return $this->andWhere(['NOT', $condition], $params);
+    }
+
+    /**
+     * Add OR WHERE NOT condition
+     */
+    public function orWhereNot(string|array $condition, array $params = []): self
+    {
+        return $this->orWhere(['NOT', $condition], $params);
     }
 
     /**
@@ -385,6 +415,50 @@ class Query
             $this->where[] = ['NOT EXISTS', $subquery];
         }
         return $this;
+    }
+
+    /**
+     * Set a custom row locking clause (e.g., 'FOR UPDATE', 'FOR SHARE', 'LOCK IN SHARE MODE')
+     *
+     * @param string|bool|null $value 'FOR UPDATE', 'FOR SHARE', or true for 'FOR UPDATE', null/false to clear
+     */
+    public function lock(string|bool|null $value = 'FOR UPDATE'): self
+    {
+        if ($value === true || $value === null) {
+            $this->lock = $value === true ? 'FOR UPDATE' : null;
+        } elseif ($value === false) {
+            $this->lock = null;
+        } else {
+            $this->lock = trim((string)$value);
+        }
+        return $this;
+    }
+
+    /**
+     * Apply exclusive pessimistic lock (FOR UPDATE).
+     *
+     * Prevents other concurrent transactions from reading (if using locks) or modifying selected rows
+     * until the current transaction commits or rolls back.
+     *
+     * @example
+     *   Database::transaction(function() use ($userId, $amount) {
+     *       $wallet = Wallet::find()->where(['user_id' => $userId])->forUpdate()->one();
+     *       // Safe from race conditions / balance double spending
+     *   });
+     */
+    public function forUpdate(): self
+    {
+        return $this->lock('FOR UPDATE');
+    }
+
+    /**
+     * Apply shared lock (FOR SHARE in PostgreSQL/MySQL 8+, LOCK IN SHARE MODE in MySQL 5.7).
+     *
+     * Allows other transactions to read the rows, but prevents them from modifying or deleting them.
+     */
+    public function forShare(): self
+    {
+        return $this->lock('FOR SHARE');
     }
 
     /**
@@ -1061,6 +1135,11 @@ class Query
             }
         }
 
+        // Row locking clause (e.g., FOR UPDATE, FOR SHARE, LOCK IN SHARE MODE)
+        if ($this->lock !== null) {
+            $sql .= ' ' . $this->lock;
+        }
+
         return $sql;
     }
 
@@ -1194,6 +1273,33 @@ class Query
             }
 
             return "{$first} ({$subSql})";
+        }
+
+        // NOT operator: ['NOT', [...]] or ['NOT', 'column = value']
+        if ($first === 'NOT' && isset($condition[1])) {
+            $inner = $condition[1];
+            if (is_array($inner)) {
+                $parsed = $this->parseCondition($inner);
+                return "NOT ({$parsed})";
+            }
+            return "NOT ({$inner})";
+        }
+
+        // OR LIKE / AND LIKE shorthand: ['OR LIKE', ['col1', 'col2'], 'value']
+        if (($first === 'OR LIKE' || $first === 'AND LIKE' || $first === 'OR NOT LIKE' || $first === 'AND NOT LIKE') && count($condition) === 3) {
+            $columns = (array)$condition[1];
+            $value = $condition[2];
+            $isNot = str_contains($first, 'NOT');
+            $subOp = $isNot ? 'NOT LIKE' : 'LIKE';
+            $glue = str_starts_with($first, 'OR') ? ' OR ' : ' AND ';
+
+            $subParts = [];
+            foreach ($columns as $col) {
+                $subParts[] = $this->parseCondition([$col, $subOp, $value]);
+            }
+
+            if (empty($subParts)) return '';
+            return '(' . implode($glue, $subParts) . ')';
         }
 
         // AND / OR grouping: ['AND', [...], [...]]
@@ -1342,7 +1448,25 @@ class Query
             return empty($filtered) ? null : $filtered;
         }
 
-        $upperFirst = strtoupper((string)($condition[0] ?? ''));
+        $upperFirst = is_string($condition[0]) ? strtoupper($condition[0]) : '';
+
+        // NOT operator: ['NOT', [...]]
+        if ($upperFirst === 'NOT' && isset($condition[1])) {
+            $inner = is_array($condition[1])
+                ? $this->filterCondition($condition[1])
+                : ($condition[1] !== '' ? $condition[1] : null);
+            if ($inner === null) return null;
+            return ['NOT', $inner];
+        }
+
+        // OR LIKE / AND LIKE shorthand: ['OR LIKE', ['col1', 'col2'], 'value']
+        if (($upperFirst === 'OR LIKE' || $upperFirst === 'AND LIKE' || $upperFirst === 'OR NOT LIKE' || $upperFirst === 'AND NOT LIKE') && count($condition) === 3) {
+            $value = $condition[2];
+            if ($value === null || $value === '' || (is_array($value) && empty($value))) {
+                return null;
+            }
+            return $condition;
+        }
 
         // AND/OR grouping: ['AND'/'OR', [...], [...]] — filter sub-conditions recursively
         // Checked first before count === 3 so that ['OR', [cond1], [cond2]] is handled as a group!
@@ -1369,8 +1493,8 @@ class Query
                 '=', '!=', '<>', '>', '<', '>=', '<=',
                 'LIKE', 'NOT LIKE', 'IN', 'NOT IN', 'BETWEEN', 'NOT BETWEEN', 'IS', 'IS NOT'
             ];
-            $firstOp = strtoupper((string)$condition[0]);
-            $middleOp = strtoupper((string)$condition[1]);
+            $firstOp = is_string($condition[0]) ? strtoupper($condition[0]) : '';
+            $middleOp = is_string($condition[1]) ? strtoupper($condition[1]) : '';
 
             if (in_array($firstOp, $knownOps)) {
                 $value = $condition[2];
