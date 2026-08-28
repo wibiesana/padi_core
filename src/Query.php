@@ -254,6 +254,140 @@ class Query
     }
 
     /**
+     * Set WHERE condition, skipping null/empty values (replaces existing WHERE)
+     *
+     * Useful for building search filters where some fields may be absent.
+     * Skips conditions where value is null, '' (empty string), or [] (empty array).
+     *
+     * @example
+     *   // Only the non-empty fields produce SQL conditions:
+     *   ->filterWhere(['status' => $status, 'type_id' => $typeId])
+     *   ->andFilterWhere(['name', 'LIKE', $search])
+     */
+    public function filterWhere(string|array $condition, array $params = []): self
+    {
+        $filtered = $this->filterCondition($condition);
+        if ($filtered !== null) {
+            $this->where = [$filtered];
+            $this->addParams($params);
+        }
+        return $this;
+    }
+
+    /**
+     * Add AND WHERE condition, skipping null/empty values
+     */
+    public function andFilterWhere(string|array $condition, array $params = []): self
+    {
+        $filtered = $this->filterCondition($condition);
+        if ($filtered !== null) {
+            return $this->andWhere($filtered, $params);
+        }
+        return $this;
+    }
+
+    /**
+     * Add OR WHERE condition, skipping null/empty values
+     */
+    public function orFilterWhere(string|array $condition, array $params = []): self
+    {
+        $filtered = $this->filterCondition($condition);
+        if ($filtered !== null) {
+            return $this->orWhere($filtered, $params);
+        }
+        return $this;
+    }
+
+    /**
+     * Set WHERE EXISTS subquery condition (replaces existing WHERE)
+     *
+     * More efficient than WHERE IN for large datasets — DB stops at first matching row.
+     *
+     * @example
+     *   // Students who have at least one violation:
+     *   ->from('students')
+     *   ->whereExists(
+     *       (new Query())->from('violations')->where('violations.student_id = students.id')
+     *   )
+     */
+    public function whereExists(Query $subquery): self
+    {
+        $this->where = [['EXISTS', $subquery]];
+        return $this;
+    }
+
+    /**
+     * Set WHERE NOT EXISTS subquery condition (replaces existing WHERE)
+     *
+     * @example
+     *   // Students with no violations at all:
+     *   ->from('students')->whereNotExists(
+     *       (new Query())->from('violations')->where('violations.student_id = students.id')
+     *   )
+     */
+    public function whereNotExists(Query $subquery): self
+    {
+        $this->where = [['NOT EXISTS', $subquery]];
+        return $this;
+    }
+
+    /**
+     * Add AND WHERE EXISTS subquery condition
+     */
+    public function andWhereExists(Query $subquery): self
+    {
+        if (empty($this->where)) {
+            $this->where = [['EXISTS', $subquery]];
+        } else {
+            $this->where[] = 'AND';
+            $this->where[] = ['EXISTS', $subquery];
+        }
+        return $this;
+    }
+
+    /**
+     * Add AND WHERE NOT EXISTS subquery condition
+     */
+    public function andWhereNotExists(Query $subquery): self
+    {
+        if (empty($this->where)) {
+            $this->where = [['NOT EXISTS', $subquery]];
+        } else {
+            $this->where[] = 'AND';
+            $this->where[] = ['NOT EXISTS', $subquery];
+        }
+        return $this;
+    }
+
+    /**
+     * Add OR WHERE EXISTS subquery condition
+     */
+    public function orWhereExists(Query $subquery): self
+    {
+        if (empty($this->where)) {
+            $this->where = [['EXISTS', $subquery]];
+        } else {
+            $this->where[] = 'OR';
+            $this->where[] = ['EXISTS', $subquery];
+        }
+        return $this;
+    }
+
+    /**
+     * Add OR WHERE NOT EXISTS subquery condition
+     */
+    public function orWhereNotExists(Query $subquery): self
+    {
+        if (empty($this->where)) {
+            $this->where = [['NOT EXISTS', $subquery]];
+        } else {
+            $this->where[] = 'OR';
+            $this->where[] = ['NOT EXISTS', $subquery];
+        }
+        return $this;
+    }
+
+    /**
      * Add parameters for binding
      */
     public function addParams(array $params): self
@@ -1039,6 +1173,29 @@ class Query
 
         $first = strtoupper((string)($condition[0] ?? ''));
 
+        // EXISTS / NOT EXISTS: ['EXISTS', $subquery] or ['NOT EXISTS', $subquery]
+        // Builds: EXISTS (SELECT 1 FROM ... WHERE ...) with merged, collision-safe params
+        if (($first === 'EXISTS' || $first === 'NOT EXISTS') && isset($condition[1]) && $condition[1] instanceof self) {
+            $subquery = $condition[1];
+
+            // Force SELECT 1 — EXISTS only checks row presence, not column values
+            $originalSelect = $subquery->select;
+            $subquery->select = ['1'];
+            $subSql = $subquery->buildSql();
+            $subquery->select = $originalSelect;
+
+            // Merge subquery params into main query with a unique suffix to prevent
+            // placeholder name collisions (e.g. :p_0_id → :p_0_id_ex3)
+            $suffix = '_ex' . count($this->params);
+            foreach ($subquery->params as $paramKey => $paramVal) {
+                $newKey = $paramKey . $suffix;
+                $subSql = str_replace($paramKey, $newKey, $subSql);
+                $this->params[$newKey] = $paramVal;
+            }
+
+            return "{$first} ({$subSql})";
+        }
+
         // AND / OR grouping: ['AND', [...], [...]]
         // These remain operator-first because they group multiple sub-conditions
         if ($first === 'AND' || $first === 'OR') {
@@ -1157,6 +1314,77 @@ class Query
     public static function find(?string $connection = null): self
     {
         return new self($connection);
+    }
+
+    /**
+     * Filter a condition by removing entries with null/empty values.
+     * Used internally by filterWhere(), andFilterWhere(), orFilterWhere().
+     *
+     * Rules:
+     *   - null, '' (empty string), [] (empty array) → condition is skipped
+     *   - AND/OR groups → sub-conditions filtered recursively; empty group → null
+     *   - AND/OR group with 1 remaining sub-condition → unwrapped (no grouping needed)
+     *
+     * @return string|array|null Filtered condition, or null if entirely empty
+     */
+    private function filterCondition(string|array $condition): string|array|null
+    {
+        if (is_string($condition)) {
+            return $condition !== '' ? $condition : null;
+        }
+
+        // Hash format: ['col' => value] — drop keys where value is empty
+        if (!isset($condition[0])) {
+            $filtered = array_filter(
+                $condition,
+                static fn($v) => $v !== null && $v !== '' && !(is_array($v) && empty($v))
+            );
+            return empty($filtered) ? null : $filtered;
+        }
+
+        $upperFirst = strtoupper((string)($condition[0] ?? ''));
+
+        // AND/OR grouping: ['AND'/'OR', [...], [...]] — filter sub-conditions recursively
+        // Checked first before count === 3 so that ['OR', [cond1], [cond2]] is handled as a group!
+        if ($upperFirst === 'AND' || $upperFirst === 'OR') {
+            $parts = [];
+            foreach (array_slice($condition, 1) as $sub) {
+                $result = is_array($sub)
+                    ? $this->filterCondition($sub)
+                    : ($sub !== '' ? $sub : null);
+                if ($result !== null) {
+                    $parts[] = $result;
+                }
+            }
+            if (empty($parts)) return null;
+            // Unwrap single-condition group — no AND/OR wrapper needed
+            if (count($parts) === 1) return $parts[0];
+            array_unshift($parts, $condition[0]);
+            return $parts;
+        }
+
+        // Operator format: [col, op, value] or [op, col, value] — skip entirely if value is empty
+        if (count($condition) === 3) {
+            $knownOps = [
+                '=', '!=', '<>', '>', '<', '>=', '<=',
+                'LIKE', 'NOT LIKE', 'IN', 'NOT IN', 'BETWEEN', 'NOT BETWEEN', 'IS', 'IS NOT'
+            ];
+            $firstOp = strtoupper((string)$condition[0]);
+            $middleOp = strtoupper((string)$condition[1]);
+
+            if (in_array($firstOp, $knownOps)) {
+                $value = $condition[2];
+            } else {
+                $value = $condition[2];
+            }
+
+            if ($value === null || $value === '' || (is_array($value) && empty($value))) {
+                return null;
+            }
+            return $condition;
+        }
+
+        return $condition;
     }
 
     /**

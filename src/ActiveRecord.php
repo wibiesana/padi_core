@@ -764,6 +764,38 @@ abstract class ActiveRecord
     }
 
     /**
+     * Find records with conditions, skipping null/empty values (instance method)
+     *
+     * Delegates to find()->filterWhere() so it reuses the full Query::filterCondition()
+     * logic without duplicating it here.
+     *
+     * Skips conditions where value is null, '' (empty string), or [] (empty array).
+     * If ALL conditions are skipped, returns all records (no WHERE clause).
+     *
+     * @example
+     *   // Only the non-null fields build SQL WHERE conditions:
+     *   $model->filterWhere(['status' => $status, 'type_id' => $typeId]);
+     *
+     * @param array $conditions Hash-format conditions ['col' => value]
+     * @param array $columns    Columns to select (default: all)
+     */
+    public function filterWhere(array $conditions, array $columns = ['*']): array
+    {
+        $query = static::find()->select($columns)->filterWhere($conditions);
+
+        // Apply model-level ordering consistent with all()
+        if ($this->defaultOrder) {
+            $query->orderBy($this->defaultOrder);
+        } elseif (is_string($this->primaryKey)) {
+            $query->orderBy("{$this->table}.{$this->primaryKey} DESC");
+        }
+
+        return $query->all();
+    }
+
+
+
+    /**
      * Create new record (Static Wrapper)
      */
     public static function create(array $data): int|string
