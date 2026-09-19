@@ -22,8 +22,9 @@ use PDOException;
 class Application
 {
     private string $basePath;
-    private $router;
+    private ?Router $router = null;
     private array $allowedOrigins;
+    private bool $allowAllOrigins = false;
     private bool $isDevelopment;
     private array $config;
 
@@ -62,10 +63,17 @@ class Application
         // Pre-calculate CORS allowed origins (loaded once)
         $corsOrigins = Env::get('CORS_ALLOWED_ORIGINS', '');
         if ($corsOrigins !== '') {
-            $this->allowedOrigins = array_map(
+            $parsed = array_map(
                 static fn(string $url): string => rtrim(trim($url), '/'),
                 explode(',', $corsOrigins)
             );
+            // Support wildcard '*' — allow all origins explicitly
+            if (in_array('*', $parsed, true)) {
+                $this->allowAllOrigins = true;
+                $this->allowedOrigins  = [];
+            } else {
+                $this->allowedOrigins = $parsed;
+            }
         } else {
             $this->allowedOrigins = [];
         }
@@ -206,7 +214,8 @@ class Application
         $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 
         if ($origin !== '') {
-            if ($this->isDevelopment || in_array($origin, $this->allowedOrigins, true)) {
+            if ($this->isDevelopment || $this->allowAllOrigins || in_array($origin, $this->allowedOrigins, true)) {
+                // Reflect the specific origin back (required when Allow-Credentials: true)
                 header("Access-Control-Allow-Origin: {$origin}");
                 header('Access-Control-Allow-Credentials: true');
                 header('Vary: Origin');
