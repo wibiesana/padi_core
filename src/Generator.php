@@ -234,14 +234,12 @@ class Generator
             $fieldsStr .= "            '{$col}' => \$this->{$col},\n";
         }
 
-        $relationsStr = "\n            // Relations\n";
-        $flattenedStr = "\n            // Flattened Fields\n";
-
-        foreach ($relations as $method => $relationData) {
-            $relationsStr .= "            '{$method}' => \$this->whenLoaded('{$method}'),\n";
-
-            $displayCol = $this->getDisplayColumn($relationData['table']);
-            $flattenedStr .= "            '{$method}_name' => \$this->{$method}['{$displayCol}'] ?? null,\n";
+        $relationsStr = "";
+        if (!empty($relations)) {
+            $relationsStr = "\n            // Relations\n";
+            foreach ($relations as $method => $relationData) {
+                $relationsStr .= "            '{$method}' => \$this->whenLoaded('{$method}'),\n";
+            }
         }
 
         return <<<PHP
@@ -256,8 +254,7 @@ class {$resourceName} extends Resource
     public function toArray(mixed \$request): array
     {
         return [
-{$fieldsStr}{$relationsStr}{$flattenedStr}
-        ];
+{$fieldsStr}{$relationsStr}        ];
     }
 }
 PHP;
