@@ -1298,16 +1298,34 @@ abstract class ActiveRecord
      */
     public function hideFields(array $data): array
     {
-        if (empty($this->hidden)) {
+        if (empty($this->hidden) || empty($data)) {
+            return $data;
+        }
+
+        // Single record (associative array or non-list)
+        if (!array_is_list($data) || !is_array(reset($data))) {
+            foreach ($this->hidden as $field) {
+                unset($data[$field]);
+            }
             return $data;
         }
 
         return array_map(function ($item) {
-            foreach ($this->hidden as $field) {
-                unset($item[$field]);
+            if (is_array($item)) {
+                foreach ($this->hidden as $field) {
+                    unset($item[$field]);
+                }
             }
             return $item;
         }, $data);
+    }
+
+    /**
+     * Get hidden attributes
+     */
+    public function getHidden(): array
+    {
+        return $this->hidden;
     }
     /**
      * Lifecycle Hook: Called before save (create/update)

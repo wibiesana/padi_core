@@ -81,8 +81,12 @@ class Generator
         // Auto-hide sensitive fields
         $sensitiveFields = ['password', 'token', 'secret', 'key'];
         foreach ($fillable as $column) {
-            if (in_array(strtolower($column), $sensitiveFields)) {
-                $hidden[] = $column;
+            $colLower = strtolower($column);
+            foreach ($sensitiveFields as $pattern) {
+                if (str_contains($colLower, $pattern)) {
+                    $hidden[] = $column;
+                    break;
+                }
             }
         }
 
