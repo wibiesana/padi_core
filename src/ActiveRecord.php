@@ -691,8 +691,9 @@ abstract class ActiveRecord
         $conditions = [];
         if (is_array($this->primaryKey)) {
             if (is_array($id)) {
-                foreach ($this->primaryKey as $key) {
-                    $conditions[$key] = $id[$key] ?? null;
+                $isList = array_is_list($id);
+                foreach ($this->primaryKey as $index => $key) {
+                    $conditions[$key] = $isList ? ($id[$index] ?? null) : ($id[$key] ?? null);
                 }
             } elseif (is_string($id) && strpos($id, '_') !== false) {
                 // Support virtual ID string "val1_val2_val3"
@@ -798,7 +799,7 @@ abstract class ActiveRecord
     /**
      * Create new record (Static Wrapper)
      */
-    public static function create(array $data): int|string
+    public static function create(array $data): int|string|array
     {
         return (new static())->insertRecord($data);
     }
@@ -806,7 +807,7 @@ abstract class ActiveRecord
     /**
      * Instance method to insert record
      */
-    public function insertRecord(array $data): int|string
+    public function insertRecord(array $data): int|string|array
     {
         $data = $this->filterFillable($data);
 
@@ -824,12 +825,25 @@ abstract class ActiveRecord
             $stmt->execute($data);
             Database::logQuery($sql, $data);
 
-            $id = $this->db->lastInsertId();
-
-            // Add ID to data for afterSave (only for non-composite primary keys)
-            if (is_string($this->primaryKey)) {
+            if (is_array($this->primaryKey)) {
+                $id = [];
+                foreach ($this->primaryKey as $pk) {
+                    $id[$pk] = $data[$pk] ?? null;
+                }
+            } elseif (is_string($this->primaryKey)) {
+                $lastId = $this->db->lastInsertId();
+                if (!empty($lastId) && $lastId !== '0') {
+                    $id = is_numeric($lastId) ? (int) $lastId : $lastId;
+                } elseif (isset($data[$this->primaryKey])) {
+                    $id = $data[$this->primaryKey];
+                } else {
+                    $id = $lastId;
+                }
                 $data[$this->primaryKey] = $id;
+            } else {
+                $id = $this->db->lastInsertId();
             }
+
             $this->afterSave(true, $data);
 
             // Invalidate cache
