@@ -58,18 +58,22 @@ class Database
     /**
      * Log query for debugging
      */
-    public static function logQuery(string $query, array $params = []): void
+    public static function logQuery(string $query, array $params = [], ?float $durationMs = null): void
     {
         self::$queryCount++;
 
         if (Env::get('APP_ENV', 'production') === 'development' && Env::get('APP_DEBUG', 'false') === 'true') {
             // Cap query log to prevent unbounded memory growth in worker mode or long-lived PHP-FPM processes
             if (count(self::$queries) < self::$maxQueryLog) {
+                $duration = $durationMs !== null ? round($durationMs, 2) : 0.0;
                 self::$queries[] = [
-                    'query'  => $query,
-                    // Cap params to prevent storing large payloads (e.g., bulk inserts)
-                    'params' => array_slice($params, 0, self::$maxQueryParams),
-                    'time'   => microtime(true)
+                    'sql'         => $query,
+                    'bindings'    => array_values(array_slice($params, 0, self::$maxQueryParams)),
+                    'duration'    => sprintf('%.2fms', $duration),
+                    'duration_ms' => $duration,
+                    'query'       => $query,
+                    'params'      => array_slice($params, 0, self::$maxQueryParams),
+                    'time'        => microtime(true)
                 ];
             }
         }

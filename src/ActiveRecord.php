@@ -1150,8 +1150,10 @@ abstract class ActiveRecord
         $total = Cache::remember($cacheKey, 300, function () use ($whereClause, $params) {
             $countSql = "SELECT COUNT(*) as total FROM {$this->table}{$whereClause}";
             $countStmt = $this->db->prepare($countSql);
+            $start = microtime(true);
             $countStmt->execute($params);
-            Database::logQuery($countSql, $params);
+            $dur = (microtime(true) - $start) * 1000.0;
+            Database::logQuery($countSql, $params, $dur);
             return $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
         });
 
@@ -1173,10 +1175,12 @@ abstract class ActiveRecord
 
         $stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
         $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $start = microtime(true);
         $stmt->execute();
+        $dur = (microtime(true) - $start) * 1000.0;
 
         $logParams = array_merge($params, ['limit' => $perPage, 'offset' => $offset]);
-        Database::logQuery($sql, $logParams);
+        Database::logQuery($sql, $logParams, $dur);
 
         $results = $this->hideFields($stmt->fetchAll(PDO::FETCH_ASSOC));
 

@@ -118,23 +118,35 @@ class Response
         $sensitiveKeys = ['password', 'token', 'secret', 'api_key', 'auth'];
 
         $sanitizedQueries = array_map(static function (array $query) use ($sensitiveKeys): array {
-            if (isset($query['params']) && is_array($query['params'])) {
-                foreach ($query['params'] as $key => $value) {
+            $bindings = $query['bindings'] ?? $query['params'] ?? [];
+            if (is_array($bindings)) {
+                foreach ($bindings as $key => $value) {
                     foreach ($sensitiveKeys as $sensitiveKey) {
                         if (stripos((string)$key, $sensitiveKey) !== false) {
-                            $query['params'][$key] = '***REDACTED***';
+                            $bindings[$key] = '***REDACTED***';
                             break;
                         }
                     }
                 }
             }
-            return $query;
+
+            $durationMs = isset($query['duration_ms']) ? (float)$query['duration_ms'] : 0.0;
+            $durationStr = isset($query['duration']) ? (string)$query['duration'] : sprintf('%.2fms', $durationMs);
+
+            return [
+                'sql'         => (string)($query['sql'] ?? $query['query'] ?? ''),
+                'bindings'    => array_values($bindings),
+                'duration'    => $durationStr,
+                'duration_ms' => round($durationMs, 2),
+            ];
         }, $queries);
 
         $debugInfo = [
+            'env'            => Env::get('APP_ENV', 'development'),
             'execution_time' => round((microtime(true) - ($_SERVER['REQUEST_TIME_FLOAT'] ?? microtime(true))) * 1000, 2) . 'ms',
-            'memory_usage' => round(memory_get_peak_usage() / 1024 / 1024, 2) . 'MB',
-            'query_count' => Database::getQueryCount(),
+            'memory_usage'   => round(memory_get_peak_usage() / 1024 / 1024, 2) . 'MB',
+            'queries_count'  => Database::getQueryCount(),
+            'query_count'    => Database::getQueryCount(),
         ];
 
         // Add database error information if available
@@ -152,9 +164,11 @@ class Response
             }
         }
 
-        if (Env::get('DEBUG_SHOW_QUERIES', 'false') === 'true') {
+        if (Env::get('DEBUG_SHOW_QUERIES', 'true') === 'true') {
             $debugInfo['queries'] = $sanitizedQueries;
         }
+
+        $debugInfo['timestamp'] = (new \DateTimeImmutable())->format(\DateTimeInterface::RFC3339_EXTENDED);
 
         // Append debug info to response
         if (is_array($data)) {

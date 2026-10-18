@@ -22,7 +22,7 @@ use PDO;
  */
 class Query
 {
-    public const VERSION = '2.1.13';
+    public const VERSION = '2.1.14';
 
     protected ?PDO $db = null;
     protected ?string $connectionName = null;
@@ -733,8 +733,8 @@ class Query
     {
         [$sql, $params] = $this->buildAndPrepare();
         $stmt = $this->db->prepare($sql);
-        $this->bindAndExecute($stmt, $params);
-        Database::logQuery($sql, $params);
+        $duration = $this->bindAndExecute($stmt, $params);
+        Database::logQuery($sql, $params, $duration);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         if ($this->indexBy !== null) {
@@ -772,8 +772,8 @@ class Query
         $this->limit(1);
         [$sql, $params] = $this->buildAndPrepare();
         $stmt = $this->db->prepare($sql);
-        $this->bindAndExecute($stmt, $params);
-        Database::logQuery($sql, $params);
+        $duration = $this->bindAndExecute($stmt, $params);
+        Database::logQuery($sql, $params, $duration);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         return $result ?: null;
     }
@@ -785,8 +785,8 @@ class Query
     {
         [$sql, $params] = $this->buildAndPrepare();
         $stmt = $this->db->prepare($sql);
-        $this->bindAndExecute($stmt, $params);
-        Database::logQuery($sql, $params);
+        $duration = $this->bindAndExecute($stmt, $params);
+        Database::logQuery($sql, $params, $duration);
         return $stmt->fetchColumn();
     }
 
@@ -797,8 +797,8 @@ class Query
     {
         [$sql, $params] = $this->buildAndPrepare();
         $stmt = $this->db->prepare($sql);
-        $this->bindAndExecute($stmt, $params);
-        Database::logQuery($sql, $params);
+        $duration = $this->bindAndExecute($stmt, $params);
+        Database::logQuery($sql, $params, $duration);
         return $stmt->fetchAll(PDO::FETCH_COLUMN);
     }
 
@@ -923,8 +923,8 @@ class Query
         }
 
         $stmt = $this->db->prepare($sql);
-        $this->bindAndExecute($stmt, $this->params);
-        Database::logQuery($sql, $this->params);
+        $duration = $this->bindAndExecute($stmt, $this->params);
+        Database::logQuery($sql, $this->params, $duration);
 
         return $stmt->rowCount();
     }
@@ -959,8 +959,8 @@ class Query
         }
 
         $stmt = $this->db->prepare($sql);
-        $this->bindAndExecute($stmt, $this->params);
-        Database::logQuery($sql, $this->params);
+        $duration = $this->bindAndExecute($stmt, $this->params);
+        Database::logQuery($sql, $this->params, $duration);
 
         return $stmt->rowCount();
     }
@@ -994,8 +994,8 @@ class Query
         $sql = 'INSERT INTO ' . $this->from . ' (' . implode(', ', $columns) . ') VALUES (' . implode(', ', $placeholders) . ')';
 
         $stmt = $this->db->prepare($sql);
-        $this->bindAndExecute($stmt, $this->params);
-        Database::logQuery($sql, $this->params);
+        $duration = $this->bindAndExecute($stmt, $this->params);
+        Database::logQuery($sql, $this->params, $duration);
 
         return $this->db->lastInsertId();
     }
@@ -1026,7 +1026,7 @@ class Query
      * 
      * Uses proper PDO types for LIMIT/OFFSET (PARAM_INT)
      */
-    private function bindAndExecute(\PDOStatement $stmt, array $params): void
+    private function bindAndExecute(\PDOStatement $stmt, array $params): float
     {
         foreach ($params as $key => $value) {
             if ($key === ':_limit' || $key === ':_offset') {
@@ -1042,7 +1042,9 @@ class Query
             }
         }
 
+        $start = microtime(true);
         $stmt->execute();
+        return (microtime(true) - $start) * 1000.0;
     }
 
     /**
