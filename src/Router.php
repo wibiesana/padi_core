@@ -323,11 +323,18 @@ class Router
             'simple' => $response->json(
                 (is_array($data) && isset($data['status']))
                     ? $data
-                    : [
-                        'status' => 'success',
-                        'code' => self::getStatusCodeName($statusCode),
-                        'item' => $data
-                    ],
+                    : ((is_array($data) && isset($data['meta'], $data['data']) && is_array($data['data']))
+                        ? [
+                            'status' => 'success',
+                            'code' => self::getStatusCodeName($statusCode),
+                            'item' => $data['data'],
+                            'meta' => $data['meta']
+                        ]
+                        : [
+                            'status' => 'success',
+                            'code' => self::getStatusCodeName($statusCode),
+                            'item' => $data
+                        ]),
                 $statusCode
             ),
             default => $this->formatFullResponse($data, $response, $statusCode),
@@ -340,6 +347,13 @@ class Router
     private function formatFullResponse($data, Response $response, int $statusCode): void
     {
         if (is_array($data) && isset($data['success'])) {
+            if (isset($data['item']) && is_array($data['item']) && isset($data['item']['meta'], $data['item']['data'])) {
+                $meta = $data['item']['meta'];
+                $data['item'] = $data['item']['data'];
+                if (!isset($data['meta'])) {
+                    $data['meta'] = $meta;
+                }
+            }
             $response->json($data, $statusCode);
             return;
         }
@@ -359,7 +373,15 @@ class Router
             default => 'SUCCESS'
         };
 
-        if (is_array($data) && $this->isCollection($data)) {
+        if (is_array($data) && isset($data['meta'], $data['data']) && is_array($data['data'])) {
+            $response->json([
+                'success' => true,
+                'message' => 'Success',
+                'message_code' => $messageCode,
+                'item' => $data['data'],
+                'meta' => $data['meta']
+            ], $statusCode);
+        } else if (is_array($data) && $this->isCollection($data)) {
             $response->json([
                 'success' => true,
                 'message' => 'Success',
