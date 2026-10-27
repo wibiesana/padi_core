@@ -84,8 +84,9 @@ class Request
         $contentType = $this->header('Content-Type', '');
 
         if (str_contains($contentType, 'application/json')) {
-            $this->rawInput = file_get_contents('php://input');
-            if ($this->rawInput !== '') {
+            $raw = file_get_contents('php://input');
+            $this->rawInput = ($raw !== false && $raw !== '') ? $raw : null;
+            if ($this->rawInput !== null) {
                 $decoded = json_decode($this->rawInput, true);
                 $this->body = is_array($decoded) ? $decoded : [];
             }

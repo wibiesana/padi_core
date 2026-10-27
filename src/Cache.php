@@ -409,7 +409,7 @@ class Cache
         if (self::$driver === 'redis') {
             $result = self::redisOp(function () use ($key, $miss) {
                 $raw = self::$redis->get($key);
-                if ($raw === null) {
+                if ($raw === null || $raw === false) {
                     return $miss;
                 }
                 $value = json_decode($raw, true);
@@ -585,7 +585,7 @@ class Cache
 
         try {
             $raw  = stream_get_contents($fp);
-            $data = $raw !== '' ? json_decode($raw, true) : null;
+            $data = ($raw !== false && $raw !== '') ? json_decode($raw, true) : null;
 
             // Check expiry
             if (is_array($data) && isset($data['expires']) && $data['expires'] > 0 && $data['expires'] < time()) {
