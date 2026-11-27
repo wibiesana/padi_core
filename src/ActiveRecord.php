@@ -69,6 +69,7 @@ abstract class ActiveRecord
      * Setting a TTL allows cache to refresh after ALTER TABLE without worker restart.
      */
     private static int $columnsCacheTtlSeconds = 3600;
+    private static bool $columnsCacheTtlLoaded = false;
 
     /**
      * Clear columns cache.
@@ -89,12 +90,8 @@ abstract class ActiveRecord
      */
     protected function getLikeOperator(): string
     {
-        try {
-            $driver = $this->db->getAttribute(PDO::ATTR_DRIVER_NAME);
-            return $driver === 'pgsql' ? 'ILIKE' : 'LIKE';
-        } catch (\Exception $e) {
-            return 'LIKE';
-        }
+        $driver = DatabaseManager::getDriver($this->connection);
+        return in_array($driver, ['pgsql', 'postgres', 'postgresql'], true) ? 'ILIKE' : 'LIKE';
     }
 
     /**
@@ -111,7 +108,8 @@ abstract class ActiveRecord
         $this->db = Database::connection($this->connection);
 
         // Load columns cache TTL from env once (static — only set on first instantiation)
-        if (self::$columnsCacheTtlSeconds === 3600) {
+        if (!self::$columnsCacheTtlLoaded) {
+            self::$columnsCacheTtlLoaded = true;
             $envTtl = Env::get('COLUMNS_CACHE_TTL', '3600');
             self::$columnsCacheTtlSeconds = max(0, (int)$envTtl);
         }
@@ -320,6 +318,13 @@ abstract class ActiveRecord
                 // Determine columns to select
                 $selectColumns = $columnsOverride ?? $relationConfig['columns'] ?? ['*'];
 
+                // Validate relation column names
+                foreach ($selectColumns as $col) {
+                    if ($col !== '*') {
+                        $this->validateIdentifier((string)$col, true);
+                    }
+                }
+
                 // Ensure the foreign key is selected to allow mapping back to parent
                 if ($selectColumns !== ['*'] && !in_array('*', $selectColumns) && $relationConfig['type'] !== 'belongsToMany') {
                     $fk = $relationConfig['foreign_key'];
@@ -375,6 +380,7 @@ abstract class ActiveRecord
                         if ($key === null) continue;
                         $result[$relation] = $relatedMap[$key] ?? [];
                     }
+                    unset($result);
                 } else {
                     // Fetch related data for belongsTo and hasMany
                     $relatedModel = new $relationConfig['model']();
@@ -414,6 +420,7 @@ abstract class ActiveRecord
                             $result[$relation] = $result[$relation][0] ?? null;
                         }
                     }
+                    unset($result);
                 }
             }
         }
@@ -737,12 +744,10 @@ abstract class ActiveRecord
         $params = [];
 
         foreach ($conditions as $key => $value) {
-            // Validate condition keys (allow dots for table prefixes)
-            if (!preg_match('/^[a-zA-Z0-9_.]+$/', $key)) {
-                throw new \InvalidArgumentException("Invalid condition key: {$key}");
-            }
-            $where[] = "{$key} = :{$key}";
-            $params[$key] = $value;
+            $this->validateIdentifier((string)$key, true);
+            $paramKey = str_replace('.', '_', (string)$key);
+            $where[] = "{$key} = :{$paramKey}";
+            $params[$paramKey] = $value;
         }
 
         $whereClause = implode(' AND ', $where);
@@ -815,8 +820,12 @@ abstract class ActiveRecord
             return 0;
         }
 
-        $columns = implode(', ', array_keys($data));
-        $placeholders = ':' . implode(', :', array_keys($data));
+        $keys = array_keys($data);
+        foreach ($keys as $col) {
+            $this->validateIdentifier((string)$col);
+        }
+        $columns = implode(', ', $keys);
+        $placeholders = ':' . implode(', :', $keys);
 
         $sql = "INSERT INTO {$this->table} ({$columns}) VALUES ({$placeholders})";
 
@@ -878,6 +887,7 @@ abstract class ActiveRecord
         $set = [];
         $params = [];
         foreach ($data as $key => $value) {
+            $this->validateIdentifier((string)$key);
             $set[] = "{$key} = :val_{$key}";
             $params["val_{$key}"] = $value;
         }
@@ -952,6 +962,9 @@ abstract class ActiveRecord
             // Use keys from the first row to determine columns
             $firstRow = reset($preparedRows);
             $columns = array_keys($firstRow);
+            foreach ($columns as $col) {
+                $this->validateIdentifier((string)$col);
+            }
             $columnNames = implode(', ', $columns);
 
             $values = [];
@@ -1011,6 +1024,7 @@ abstract class ActiveRecord
 
         // Prepare SET clause with prefixed params to avoid collision
         foreach ($data as $key => $value) {
+            $this->validateIdentifier((string)$key);
             $set[] = "{$key} = :update_{$key}";
             $params["update_{$key}"] = $value;
         }
@@ -1020,11 +1034,10 @@ abstract class ActiveRecord
         // Prepare WHERE clause
         $where = [];
         foreach ($conditions as $key => $value) {
-            if (!preg_match('/^[a-zA-Z0-9_.]+$/', $key)) {
-                throw new \InvalidArgumentException("Invalid condition key: {$key}");
-            }
-            $where[] = "{$key} = :where_{$key}";
-            $params["where_{$key}"] = $value;
+            $this->validateIdentifier((string)$key, true);
+            $paramKey = str_replace('.', '_', (string)$key);
+            $where[] = "{$key} = :where_{$paramKey}";
+            $params["where_{$paramKey}"] = $value;
         }
 
         $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
@@ -1130,15 +1143,15 @@ abstract class ActiveRecord
      */
     public function paginate(int $page = 1, int $perPage = 10, array $conditions = [], ?string $orderBy = null): array
     {
+        $page = max(1, $page);
+        $perPage = max(1, $perPage);
         $offset = ($page - 1) * $perPage;
 
         $where = [];
         $params = [];
 
         foreach ($conditions as $key => $value) {
-            if (!preg_match('/^[a-zA-Z0-9_]+$/', $key)) {
-                throw new \InvalidArgumentException("Invalid condition key: {$key}");
-            }
+            $this->validateIdentifier((string)$key);
             $where[] = "{$key} = :{$key}";
             $params[$key] = $value;
         }
@@ -1146,8 +1159,8 @@ abstract class ActiveRecord
         $whereClause = !empty($where) ? ' WHERE ' . implode(' AND ', $where) : '';
 
         // Cache total count for 5 minutes
-        $cacheKey = "table_count:{$this->table}" . ($whereClause ? md5($whereClause . serialize($params)) : '');
-        $total = Cache::remember($cacheKey, 300, function () use ($whereClause, $params) {
+        $cacheKey = "table_count:{$this->table}" . ($whereClause ? hash('xxh3', $whereClause . json_encode($params)) : '');
+        $total = (int)Cache::remember($cacheKey, 300, function () use ($whereClause, $params) {
             $countSql = "SELECT COUNT(*) as total FROM {$this->table}{$whereClause}";
             $countStmt = $this->db->prepare($countSql);
             $start = microtime(true);
@@ -1195,11 +1208,11 @@ abstract class ActiveRecord
         return [
             'data' => $results,
             'meta' => [
-                'total' => (int)$total,
+                'total' => $total,
                 'per_page' => $perPage,
                 'current_page' => $page,
                 'last_page' => (int)ceil($total / $perPage),
-                'from' => $offset + 1,
+                'from' => $total > 0 ? $offset + 1 : 0,
                 'to' => min($offset + $perPage, $total)
             ]
         ];
@@ -1215,6 +1228,20 @@ abstract class ActiveRecord
         Database::logQuery($sql, $params);
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Validate a SQL column/table identifier to prevent SQL injection.
+     *
+     * @throws \InvalidArgumentException
+     */
+    protected function validateIdentifier(string $name, bool $allowDot = false): string
+    {
+        $pattern = $allowDot ? '/^[a-zA-Z_][a-zA-Z0-9_.]*$/' : '/^[a-zA-Z_][a-zA-Z0-9_]*$/';
+        if (!preg_match($pattern, $name)) {
+            throw new \InvalidArgumentException("Invalid SQL identifier: {$name}");
+        }
+        return $name;
     }
 
     /**
@@ -1279,7 +1306,7 @@ abstract class ActiveRecord
 
         $columns = [];
         try {
-            $sql = "SELECT * FROM {$this->table} LIMIT 1";
+            $sql = "SELECT * FROM {$this->table} LIMIT 0";
             $stmt = $this->db->prepare($sql);
             $stmt->execute();
 
@@ -1436,11 +1463,10 @@ abstract class ActiveRecord
         $params = [];
 
         foreach ($conditions as $key => $value) {
-            if (!preg_match('/^[a-zA-Z0-9_.]+$/', $key)) {
-                throw new \InvalidArgumentException("Invalid condition key: {$key}");
-            }
-            $where[] = "{$key} = :{$key}";
-            $params[$key] = $value;
+            $this->validateIdentifier((string)$key, true);
+            $paramKey = str_replace('.', '_', (string)$key);
+            $where[] = "{$key} = :{$paramKey}";
+            $params[$paramKey] = $value;
         }
 
         $whereClause = !empty($where) ? ' WHERE ' . implode(' AND ', $where) : '';
@@ -1470,12 +1496,17 @@ abstract class ActiveRecord
             return 0;
         }
 
-        $columns = implode(', ', array_keys($data));
-        $placeholders = ':' . implode(', :', array_keys($data));
+        $keys = array_keys($data);
+        foreach ($keys as $col) {
+            $this->validateIdentifier((string)$col);
+        }
+        $columns = implode(', ', $keys);
+        $placeholders = ':' . implode(', :', $keys);
 
         $updateParts = [];
         $updateCols = !empty($updateColumns) ? $updateColumns : array_keys($data);
         foreach ($updateCols as $col) {
+            $this->validateIdentifier((string)$col);
             $updateParts[] = "{$col} = VALUES({$col})";
         }
         $updateClause = implode(', ', $updateParts);

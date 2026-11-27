@@ -425,12 +425,7 @@ class Validator
     private function validateJson(string $field, mixed $value): void
     {
         if ($this->isEmpty($value)) return;
-        if (!is_string($value)) {
-            $this->addError($field, 'json', 'The {field} must be a valid JSON string');
-            return;
-        }
-        json_decode($value);
-        if (json_last_error() !== JSON_ERROR_NONE) {
+        if (!is_string($value) || !json_validate($value)) {
             $this->addError($field, 'json', 'The {field} must be a valid JSON string');
         }
     }
@@ -509,20 +504,20 @@ class Validator
                 throw new \InvalidArgumentException("Invalid id column name: {$idColumn}");
             }
 
-            $sql = "SELECT COUNT(*) as count FROM {$table} WHERE {$column} = :value";
+            $sql = "SELECT 1 FROM {$table} WHERE {$column} = :value";
             $params = ['value' => $value];
 
             if ($ignoreId !== null && $ignoreId !== '') {
                 $sql .= " AND {$idColumn} != :ignoreId";
                 $params['ignoreId'] = $ignoreId;
             }
+            $sql .= " LIMIT 1";
 
             $db = Database::connection();
             $stmt = $db->prepare($sql);
             $stmt->execute($params);
-            $result = $stmt->fetch(\PDO::FETCH_ASSOC);
 
-            return ($result['count'] ?? 0) > 0;
+            return $stmt->fetchColumn() !== false;
         } catch (\Exception $e) {
             if (Env::get('APP_ENV', 'production') === 'development' && Env::get('APP_DEBUG') === 'true') {
                 error_log("Validator checkUnique error: " . $e->getMessage());

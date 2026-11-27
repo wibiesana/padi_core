@@ -11,7 +11,7 @@ namespace Wibiesana\Padi\Core;
 class Generator
 {
     private string $baseDir;
-    private $db;
+    private \PDO $db;
 
     /**
      * Protected tables that should not be auto-generated
@@ -49,7 +49,7 @@ class Generator
     {
         // Normalize input: if PascalCase model name is given (e.g. 'Article', 'JobVacancy'),
         // convert it to the actual DB table name before proceeding.
-        if (ctype_upper($tableName[0])) {
+        if ($tableName !== '' && ctype_upper($tableName[0])) {
             $tableName = $this->modelNameToTableName($tableName);
         }
 
@@ -293,7 +293,7 @@ PHP;
     {
         // Normalize input: if PascalCase model name is given (e.g. 'Article', 'JobVacancy'),
         // convert it to the actual DB table name (e.g. 'article', 'job_vacancies').
-        if (ctype_upper($tableName[0])) {
+        if ($tableName !== '' && ctype_upper($tableName[0])) {
             $tableName = $this->modelNameToTableName($tableName);
         }
 
@@ -1209,7 +1209,7 @@ PHP;
     /**
      * Helper to convert snake_case to camelCase
      */
-    private function snakeToCamel($string)
+    private function snakeToCamel(string $string): string
     {
         return lcfirst(str_replace(' ', '', ucwords(str_replace('_', ' ', $string))));
     }

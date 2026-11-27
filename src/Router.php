@@ -18,11 +18,14 @@ namespace Wibiesana\Padi\Core;
  */
 class Router
 {
-    /** @var array<string, array<int, array>> Routes indexed by HTTP method */
-    private array $routes = [];
+    /** @var array<string, array<string, array>> Static routes indexed by [method][path] for O(1) lookup */
+    private array $staticRoutes = [];
 
-    /** @var string|null Last registered route's HTTP method (for middleware chaining) */
-    private ?string $lastMethod = null;
+    /** @var array<string, array<int, array>> Dynamic routes (with parameters) indexed by [method] */
+    private array $dynamicRoutes = [];
+
+    /** @var array{method: string, static: bool, key: int|string}|null Last registered route ref (for middleware chaining) */
+    private ?array $lastRouteRef = null;
 
     /** @var string Current group prefix */
     private string $prefix = '';
@@ -33,7 +36,7 @@ class Router
     /**
      * Add GET route
      */
-    public function get(string $path, $handler): self
+    public function get(string $path, callable|string $handler): self
     {
         return $this->addRoute('GET', $path, $handler);
     }
@@ -41,7 +44,7 @@ class Router
     /**
      * Add POST route
      */
-    public function post(string $path, $handler): self
+    public function post(string $path, callable|string $handler): self
     {
         return $this->addRoute('POST', $path, $handler);
     }
@@ -49,7 +52,7 @@ class Router
     /**
      * Add PUT route
      */
-    public function put(string $path, $handler): self
+    public function put(string $path, callable|string $handler): self
     {
         return $this->addRoute('PUT', $path, $handler);
     }
@@ -57,7 +60,7 @@ class Router
     /**
      * Add PATCH route
      */
-    public function patch(string $path, $handler): self
+    public function patch(string $path, callable|string $handler): self
     {
         return $this->addRoute('PATCH', $path, $handler);
     }
@@ -65,7 +68,7 @@ class Router
     /**
      * Add DELETE route
      */
-    public function delete(string $path, $handler): self
+    public function delete(string $path, callable|string $handler): self
     {
         return $this->addRoute('DELETE', $path, $handler);
     }
@@ -73,7 +76,7 @@ class Router
     /**
      * Add OPTIONS route
      */
-    public function options(string $path, $handler): self
+    public function options(string $path, callable|string $handler): self
     {
         return $this->addRoute('OPTIONS', $path, $handler);
     }
@@ -81,7 +84,7 @@ class Router
     /**
      * Add route for any HTTP method
      */
-    public function any(string $path, $handler): void
+    public function any(string $path, callable|string $handler): void
     {
         foreach (['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as $method) {
             $this->addRoute($method, $path, $handler);
@@ -124,15 +127,22 @@ class Router
     /**
      * Add middleware to last registered route
      */
-    public function middleware($middleware): self
+    public function middleware(string|callable|array $middleware): self
     {
         $middlewares = is_array($middleware) ? $middleware : [$middleware];
 
-        if ($this->lastMethod !== null && !empty($this->routes[$this->lastMethod])) {
-            $lastRouteKey = array_key_last($this->routes[$this->lastMethod]);
-            if ($lastRouteKey !== null) {
-                $this->routes[$this->lastMethod][$lastRouteKey]['middlewares'] = array_merge(
-                    $this->routes[$this->lastMethod][$lastRouteKey]['middlewares'],
+        if ($this->lastRouteRef !== null) {
+            $method = $this->lastRouteRef['method'];
+            $key = $this->lastRouteRef['key'];
+
+            if ($this->lastRouteRef['static'] && isset($this->staticRoutes[$method][$key])) {
+                $this->staticRoutes[$method][$key]['middlewares'] = array_merge(
+                    $this->staticRoutes[$method][$key]['middlewares'],
+                    $middlewares
+                );
+            } elseif (!$this->lastRouteRef['static'] && isset($this->dynamicRoutes[$method][$key])) {
+                $this->dynamicRoutes[$method][$key]['middlewares'] = array_merge(
+                    $this->dynamicRoutes[$method][$key]['middlewares'],
                     $middlewares
                 );
             }
@@ -144,27 +154,42 @@ class Router
     /**
      * Register a route
      * 
-     * Regex is pre-compiled here so worker mode doesn't recompile per-request.
+     * Static routes are indexed in a hash map for O(1) lookup.
+     * Dynamic routes pre-compile regex once so worker mode doesn't recompile per-request.
      */
-    private function addRoute(string $method, string $path, $handler): self
+    private function addRoute(string $method, string $path, callable|string $handler): self
     {
         $path = '/' . trim($this->prefix . '/' . trim($path, '/'), '/');
         $path = $path === '/' ? '/' : rtrim($path, '/');
+
+        if (!str_contains($path, '{')) {
+            $this->staticRoutes[$method][$path] = [
+                'path' => $path,
+                'handler' => $handler,
+                'middlewares' => $this->groupMiddlewares
+            ];
+            $this->lastRouteRef = ['method' => $method, 'static' => true, 'key' => $path];
+            return $this;
+        }
 
         // Pre-compile regex for performance (compiled once, matched many times)
         $regex = preg_replace('/\{([a-zA-Z0-9_]+)\*\}/', '(?P<$1>.*)', $path);
         $regex = preg_replace('/\{([a-zA-Z0-9_]+)\}/', '(?P<$1>[^/]+)', $regex);
         $regex = '#^' . $regex . '$#';
 
-        // Index by method for O(routes/methods) dispatch instead of O(routes)
-        $this->routes[$method][] = [
+        // Index by method for O(routes/methods) dispatch
+        $this->dynamicRoutes[$method][] = [
             'path' => $path,
             'regex' => $regex,
             'handler' => $handler,
             'middlewares' => $this->groupMiddlewares
         ];
 
-        $this->lastMethod = $method;
+        $this->lastRouteRef = [
+            'method' => $method,
+            'static' => false,
+            'key' => array_key_last($this->dynamicRoutes[$method])
+        ];
 
         return $this;
     }
@@ -181,29 +206,18 @@ class Router
         $method = $request->method();
         $uri = rtrim($request->uri(), '/') ?: '/';
 
-        // Method-indexed lookup: only iterate routes matching the HTTP method
-        $methodRoutes = $this->routes[$method] ?? [];
+        // 1. O(1) static route fast-path
+        if (isset($this->staticRoutes[$method][$uri])) {
+            $this->runMatchedRoute($this->staticRoutes[$method][$uri], [], $request);
+            return;
+        }
 
+        // 2. Dynamic routes (regex matching)
+        $methodRoutes = $this->dynamicRoutes[$method] ?? [];
         foreach ($methodRoutes as $route) {
             if (preg_match($route['regex'], $uri, $matches)) {
-                // Extract named parameters only
                 $params = array_filter($matches, 'is_string', ARRAY_FILTER_USE_KEY);
-                $request->setParams($params);
-
-                try {
-                    // Execute middleware pipeline
-                    foreach ($route['middlewares'] as $middleware) {
-                        $this->executeMiddleware($middleware, $request);
-                    }
-
-                    // Execute handler
-                    $this->executeHandler($route['handler'], $request);
-                } catch (TerminateException $e) {
-                    // Response was intentionally terminated (e.g., json() called)
-                    return;
-                } catch (\Throwable $e) {
-                    $this->handleException($e, $request);
-                }
+                $this->runMatchedRoute($route, $params, $request);
                 return;
             }
         }
@@ -218,9 +232,30 @@ class Router
     }
 
     /**
+     * Execute middleware pipeline and handler for a matched route
+     */
+    private function runMatchedRoute(array $route, array $params, Request $request): void
+    {
+        $request->setParams($params);
+
+        try {
+            foreach ($route['middlewares'] as $middleware) {
+                $this->executeMiddleware($middleware, $request);
+            }
+
+            $this->executeHandler($route['handler'], $request);
+        } catch (TerminateException $e) {
+            // Response was intentionally terminated (e.g., json() called)
+            return;
+        } catch (\Throwable $e) {
+            $this->handleException($e, $request);
+        }
+    }
+
+    /**
      * Execute a middleware (class-based or callable)
      */
-    private function executeMiddleware($middleware, Request $request): void
+    private function executeMiddleware(string|callable $middleware, Request $request): void
     {
         if (is_string($middleware)) {
             // Support parameters like 'RoleMiddleware:admin,manager'
@@ -243,7 +278,7 @@ class Router
     /**
      * Execute route handler (closure or Controller@method string)
      */
-    private function executeHandler($handler, Request $request): void
+    private function executeHandler(callable|string $handler, Request $request): void
     {
         $result = null;
 
@@ -285,11 +320,27 @@ class Router
             $statusCode = 500;
         }
 
-        $error = [
-            'success' => false,
-            'message' => $e->getMessage() ?: 'An error occurred',
-            'message_code' => self::getStatusCodeName($statusCode)
-        ];
+        $isDebug = Env::get('APP_ENV', 'production') === 'development' && Env::get('APP_DEBUG', 'false') === 'true';
+
+        if ($e instanceof \PDOException) {
+            DatabaseManager::logError($e);
+            $error = [
+                'success' => false,
+                'message' => $isDebug ? $e->getMessage() : 'Database error occurred',
+                'message_code' => 'DATABASE_ERROR'
+            ];
+            $statusCode = 500;
+        } else {
+            $message = ($isDebug || $statusCode < 500)
+                ? ($e->getMessage() ?: 'An error occurred')
+                : 'Internal Server Error';
+
+            $error = [
+                'success' => false,
+                'message' => $message,
+                'message_code' => self::getStatusCodeName($statusCode)
+            ];
+        }
 
         // Include validation errors
         if ($e instanceof ValidationException) {
@@ -297,7 +348,6 @@ class Router
         }
 
         // Debug info only in debug mode (development environment)
-        $isDebug = Env::get('APP_ENV', 'production') === 'development' && Env::get('APP_DEBUG', 'false') === 'true';
         if ($isDebug) {
             $error['debug'] = [
                 'file' => $e->getFile(),
@@ -312,7 +362,7 @@ class Router
     /**
      * Auto-format response based on return type and headers
      */
-    private function formatResponse($data, Request $request): void
+    private function formatResponse(mixed $data, Request $request): void
     {
         $response = new Response();
         $statusCode = $request->getResponseStatusCode() ?? 200;
@@ -344,7 +394,7 @@ class Router
     /**
      * Full framework response format (with auto-detect collection/single)
      */
-    private function formatFullResponse($data, Response $response, int $statusCode): void
+    private function formatFullResponse(mixed $data, Response $response, int $statusCode): void
     {
         if (is_array($data) && isset($data['success'])) {
             if (isset($data['item']) && is_array($data['item']) && isset($data['item']['meta'], $data['item']['data'])) {
@@ -364,7 +414,7 @@ class Router
     /**
      * Auto-format response as collection or single item
      */
-    private function autoFormatResponse($data, Response $response, int $statusCode): void
+    private function autoFormatResponse(mixed $data, Response $response, int $statusCode): void
     {
         $messageCode = match ($statusCode) {
             200 => 'SUCCESS',
@@ -406,7 +456,7 @@ class Router
     /**
      * Check if data is a collection (sequential array or paginated result)
      */
-    private function isCollection($data): bool
+    private function isCollection(mixed $data): bool
     {
         if (!is_array($data)) return false;
         if (empty($data)) return true;

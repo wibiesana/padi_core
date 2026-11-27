@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Wibiesana\Padi\Core;
 
 /**
@@ -11,7 +13,7 @@ namespace Wibiesana\Padi\Core;
  * Worker-mode safe:
  * - JWT tokens are cached per-process lifecycle (no regeneration per request).
  * - cURL handles use persistent keep-alive connections for lower latency.
- * - curl_close() is always called to prevent memory leaks.
+ * - CurlHandle instances are managed cleanly (auto-freed in PHP 8.0+, reused in batches).
  * - JSON encoding uses JSON_THROW_ON_ERROR for fast, explicit failure.
  */
 class Realtime
@@ -45,7 +47,11 @@ class Realtime
         }
 
         $hubUrl = Env::get('MERCURE_HUB_URL', '');
-        $secret = Env::get('MERCURE_PUBLISHER_JWT_KEY', 'padi_mercure_publisher_secret_key_change_me_in_prod');
+        $secret = self::getSecret('MERCURE_PUBLISHER_JWT_KEY', 'padi_mercure_publisher_secret_key_change_me_in_prod');
+
+        if ($secret === null) {
+            return false;
+        }
 
         if (empty($hubUrl)) {
             Logger::error("Mercure Hub URL is not configured in .env (MERCURE_HUB_URL)");
@@ -92,7 +98,11 @@ class Realtime
         }
 
         $hubUrl = Env::get('MERCURE_HUB_URL', '');
-        $secret = Env::get('MERCURE_PUBLISHER_JWT_KEY', 'padi_mercure_publisher_secret_key_change_me_in_prod');
+        $secret = self::getSecret('MERCURE_PUBLISHER_JWT_KEY', 'padi_mercure_publisher_secret_key_change_me_in_prod');
+
+        if ($secret === null) {
+            return 0;
+        }
 
         if (empty($hubUrl)) {
             Logger::error("Mercure Hub URL is not configured in .env (MERCURE_HUB_URL)");
@@ -100,6 +110,12 @@ class Realtime
         }
 
         $token = self::getCachedPublisherJwt($secret);
+        $ch = curl_init();
+        if ($ch === false) {
+            Logger::error("Mercure: failed to initialize cURL handle");
+            return 0;
+        }
+
         $successCount = 0;
 
         foreach ($events as $event) {
@@ -129,7 +145,7 @@ class Realtime
                 $queryParts[] = 'target=' . urlencode((string)$target);
             }
 
-            if (self::curlPost($hubUrl, implode('&', $queryParts), $token)) {
+            if (self::executeCurlPost($ch, $hubUrl, implode('&', $queryParts), $token)) {
                 $successCount++;
             }
         }
@@ -155,7 +171,10 @@ class Realtime
      */
     public static function generateSubscriberJwt(array $topics = ['*']): string
     {
-        $secret = Env::get('MERCURE_SUBSCRIBER_JWT_KEY', 'padi_mercure_subscriber_secret_key_change_me_in_prod');
+        $secret = self::getSecret('MERCURE_SUBSCRIBER_JWT_KEY', 'padi_mercure_subscriber_secret_key_change_me_in_prod');
+        if ($secret === null) {
+            throw new \RuntimeException('MERCURE_SUBSCRIBER_JWT_KEY is not configured.');
+        }
 
         $now = time();
         $payload = [
@@ -204,9 +223,24 @@ class Realtime
         return $token;
     }
 
+    private static function getSecret(string $envKey, string $devFallback): ?string
+    {
+        $secret = (string)Env::get($envKey, '');
+        if ($secret !== '') {
+            return $secret;
+        }
+
+        if (Env::get('APP_ENV', 'production') === 'development') {
+            return $devFallback;
+        }
+
+        Logger::error("Mercure secret {$envKey} is not configured in .env");
+        return null;
+    }
+
     /**
      * Execute a single HTTP POST to the Mercure Hub via cURL.
-     * Uses keep-alive and fast timeouts; always closes the handle cleanly.
+     * Uses keep-alive and fast timeouts.
      *
      * @param string $hubUrl      Mercure Hub endpoint URL
      * @param string $queryString URL-encoded POST body
@@ -220,6 +254,16 @@ class Realtime
             Logger::error("Mercure: failed to initialize cURL handle");
             return false;
         }
+
+        return self::executeCurlPost($ch, $hubUrl, $queryString, $token);
+    }
+
+    /**
+     * Execute HTTP POST on an initialized CurlHandle (reusable for batch keep-alive).
+     */
+    private static function executeCurlPost(\CurlHandle $ch, string $hubUrl, string $queryString, string $token): bool
+    {
+        $isDev = Env::get('APP_ENV', 'production') === 'development';
 
         curl_setopt_array($ch, [
             CURLOPT_URL            => $hubUrl,
@@ -235,15 +279,13 @@ class Realtime
             CURLOPT_CONNECTTIMEOUT_MS => 500,   // 0.5s connection timeout
             CURLOPT_TIMEOUT_MS        => 1000,  // 1.0s total timeout
             // Security: verify TLS cert in production; skip only for local dev
-            CURLOPT_SSL_VERIFYPEER => Env::get('APP_ENV', 'production') !== 'development',
-            CURLOPT_SSL_VERIFYHOST => Env::get('APP_ENV', 'production') !== 'development' ? 2 : 0,
+            CURLOPT_SSL_VERIFYPEER => !$isDev,
+            CURLOPT_SSL_VERIFYHOST => $isDev ? 0 : 2,
         ]);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error    = curl_error($ch);
-
-        curl_close($ch); // Always close — critical in worker mode to prevent handle accumulation
 
         if ($error !== '') {
             Logger::error("Mercure cURL error: {$error}");

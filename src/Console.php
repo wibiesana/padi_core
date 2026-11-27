@@ -12,7 +12,7 @@ class Console
     public function __construct(array $args)
     {
         $this->args = $args;
-        $this->baseDir = defined('PADI_ROOT') ? PADI_ROOT : getcwd();
+        $this->baseDir = defined('PADI_ROOT') ? PADI_ROOT : (getcwd() ?: '.');
     }
 
     /**
@@ -160,9 +160,14 @@ class Console
             return;
         }
 
-        $port = $this->getOption('port', '8085');
+        $port = (int)$this->getOption('port', '8085');
         $host = $this->getOption('host', 'localhost');
         $publicDir = $this->baseDir . '/public';
+
+        if (!preg_match('/^[a-zA-Z0-9._:\[\]-]+$/', $host) || $port < 1 || $port > 65535) {
+            echo "\e[31mError: Invalid host or port.\e[0m\n";
+            return;
+        }
 
         if (!is_dir($publicDir)) {
             echo "\e[31mError: Public directory not found at {$publicDir}\e[0m\n";
@@ -172,7 +177,7 @@ class Console
         echo "\e[32mStarting Padi development server:\e[0m http://{$host}:{$port}\n";
         echo "Press Ctrl+C to stop.\n";
 
-        passthru("php -S {$host}:{$port} -t \"{$publicDir}\"");
+        passthru('php -S ' . escapeshellarg("{$host}:{$port}") . ' -t ' . escapeshellarg($publicDir));
     }
 
     private function serveFrankenphp(bool $worker = false): void
@@ -182,11 +187,16 @@ class Console
             return;
         }
 
-        $port = $this->getOption('port', '8085');
+        $port = (int)$this->getOption('port', '8085');
         $host = $this->getOption('host', 'localhost');
         $numWorkers = $this->getOption('workers', '');
         $configFile = $this->getOption('config', '');
         $publicDir = $this->baseDir . '/public';
+
+        if (!preg_match('/^[a-zA-Z0-9._:\[\]-]+$/', $host) || $port < 1 || $port > 65535) {
+            echo "\e[31mError: Invalid host or port.\e[0m\n";
+            return;
+        }
 
         if (!is_dir($publicDir)) {
             echo "\e[31mError: Public directory not found at {$publicDir}\e[0m\n";
@@ -208,17 +218,18 @@ class Console
         echo "\e[32mStarting FrankenPHP server ({$modeLabel}):\e[0m http://{$host}:{$port}\n";
         echo "Press Ctrl+C to stop.\n\n";
 
+        $listenArg = escapeshellarg("{$host}:{$port}");
         if (!empty($configFile)) {
-            $cmd = "{$binary} run --config \"{$configFile}\"";
+            $cmd = "{$binary} run --config " . escapeshellarg($configFile);
         } elseif ($worker) {
             $entryScript = "public/index.php";
-            $workerOpt = "--worker \"{$entryScript}\"";
-            if (!empty($numWorkers)) {
-                $workerOpt .= " --nb-workers {$numWorkers}";
+            $workerOpt = "--worker " . escapeshellarg($entryScript);
+            if ($numWorkers !== '' && (int)$numWorkers > 0) {
+                $workerOpt .= " --nb-workers " . (int)$numWorkers;
             }
-            $cmd = "{$binary} php-server -r \"public\" {$workerOpt} -l \"{$host}:{$port}\"";
+            $cmd = "{$binary} php-server -r \"public\" {$workerOpt} -l {$listenArg}";
         } else {
-            $cmd = "{$binary} php-server -r \"public\" -l \"{$host}:{$port}\"";
+            $cmd = "{$binary} php-server -r \"public\" -l {$listenArg}";
         }
 
         passthru($cmd);

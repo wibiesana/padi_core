@@ -214,7 +214,7 @@ class Application
         $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 
         if ($origin !== '') {
-            if ($this->isDevelopment || $this->allowAllOrigins || in_array($origin, $this->allowedOrigins, true)) {
+            if (!str_contains($origin, "\r") && !str_contains($origin, "\n") && ($this->isDevelopment || $this->allowAllOrigins || in_array($origin, $this->allowedOrigins, true))) {
                 // Reflect the specific origin back (required when Allow-Credentials: true)
                 header("Access-Control-Allow-Origin: {$origin}");
                 header('Access-Control-Allow-Credentials: true');
@@ -256,6 +256,18 @@ class Application
      */
     private function healthCheckConnections(): void
     {
+        static $lastHealthCheck = 0;
+        static $interval = null;
+        if ($interval === null) {
+            $interval = max(0, (int)Env::get('DB_HEALTH_CHECK_INTERVAL', '30'));
+        }
+
+        $now = time();
+        if ($interval > 0 && ($now - $lastHealthCheck) < $interval) {
+            return;
+        }
+        $lastHealthCheck = $now;
+
         $connections = DatabaseManager::getConnections();
         if (empty($connections)) return;
 
@@ -336,7 +348,9 @@ class Application
         // Reset per-request auth cache (token, decoded user)
         Auth::reset();
 
-        // Reset database singleton to prevent stale PDO references
+        // Reset database query log, error history, and singleton
+        Database::resetQueryCount();
+        DatabaseManager::clearErrors();
         Database::resetInstance();
     }
 

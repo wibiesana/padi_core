@@ -21,7 +21,11 @@ class Response
      */
     public function header(string $key, string $value): self
     {
-        $this->headers[$key] = $value;
+        $safeKey = str_replace(["\r", "\n", "\0"], '', $key);
+        $safeValue = str_replace(["\r", "\n", "\0"], '', $value);
+        if ($safeKey !== '') {
+            $this->headers[$safeKey] = $safeValue;
+        }
         return $this;
     }
 
@@ -87,7 +91,7 @@ class Response
             && str_contains($_SERVER['HTTP_ACCEPT_ENCODING'], 'gzip');
 
         if ($useCompression) {
-            $compressed = gzencode($jsonOutput, 6);
+            $compressed = gzencode($jsonOutput, 4);
             if ($compressed !== false) {
                 $this->header('Content-Encoding', 'gzip');
                 $this->header('Content-Length', (string)strlen($compressed));
@@ -226,7 +230,7 @@ class Response
      */
     public function download(string $filePath, ?string $filename = null): void
     {
-        if (!file_exists($filePath)) {
+        if (!is_file($filePath) || !is_readable($filePath)) {
             $this->status(404)->text('File not found');
             return;
         }
@@ -250,13 +254,21 @@ class Response
      */
     public function redirect(string $url, int $code = 302): void
     {
-        if (headers_sent($file, $line)) {
-            error_log("Response::redirect - headers already sent at {$file}:{$line}");
+        if (str_contains($url, "\r") || str_contains($url, "\n") || str_contains($url, "\0")) {
+            throw new \InvalidArgumentException('Invalid redirect URL.');
         }
 
-        // Validate redirect URL to prevent open redirect
-        if (!filter_var($url, FILTER_VALIDATE_URL) && !str_starts_with($url, '/')) {
-            error_log("Response::redirect - potentially unsafe URL: {$url}");
+        // Allow safe relative paths (not protocol-relative '//...') or valid http/https URLs
+        $isRelative = str_starts_with($url, '/') && !str_starts_with($url, '//');
+        $isHttpUrl = (str_starts_with($url, 'http://') || str_starts_with($url, 'https://'))
+            && filter_var($url, FILTER_VALIDATE_URL) !== false;
+
+        if (!$isRelative && !$isHttpUrl) {
+            throw new \InvalidArgumentException('Unsafe redirect URL.');
+        }
+
+        if (headers_sent($file, $line)) {
+            error_log("Response::redirect - headers already sent at {$file}:{$line}");
         }
 
         $this->statusCode = $code;

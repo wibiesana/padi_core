@@ -16,7 +16,7 @@ class SetupWizard
 
     public function __construct(?string $projectRoot = null)
     {
-        $this->projectRoot = $projectRoot ?? (defined('PADI_ROOT') ? PADI_ROOT : getcwd());
+        $this->projectRoot = $projectRoot ?? (defined('PADI_ROOT') ? PADI_ROOT : (getcwd() ?: '.'));
     }
 
     public static function colorize(string $text, string $color): string

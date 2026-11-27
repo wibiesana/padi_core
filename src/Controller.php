@@ -76,11 +76,10 @@ abstract class Controller
             $query = $modelClass::find();
         }
 
-        if ($sortBy) {
-            $tableName = (new $modelClass())->getTable();
+        $tableName = (new $modelClass())->getTable();
+        if ($sortBy !== null && $sortBy !== '' && preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', (string)$sortBy)) {
             $query->orderBy("{$tableName}.{$sortBy} {$order}");
         } else {
-            $tableName = (new $modelClass())->getTable();
             $query->orderBy("{$tableName}.id DESC");
         }
 

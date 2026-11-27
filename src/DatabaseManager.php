@@ -448,7 +448,7 @@ class DatabaseManager
     /**
      * Log a database error with sanitized parameters
      */
-    public static function logError(\Exception $e, string $query = '', array $params = []): void
+    public static function logError(\Throwable $e, string $query = '', array $params = []): void
     {
         self::$lastDatabaseError = [
             'type' => 'query_error',

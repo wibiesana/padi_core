@@ -44,7 +44,7 @@ class Request
             $requestUri = '/' . ltrim($requestUri, '/');
         }
         $path = parse_url($requestUri, PHP_URL_PATH) ?: '/';
-        $this->uri = preg_replace('#/{2,}#', '/', $path) ?: '/';
+        $this->uri = str_contains($path, '//') ? (preg_replace('#/{2,}#', '/', $path) ?: '/') : $path;
         $this->query = $_GET;
         $this->files = $_FILES;
         $this->parseHeaders();
@@ -134,9 +134,10 @@ class Request
     public function rawBody(): string
     {
         if ($this->rawInput === null) {
-            $this->rawInput = file_get_contents('php://input');
+            $raw = file_get_contents('php://input');
+            $this->rawInput = $raw !== false ? $raw : '';
         }
-        return $this->rawInput ?? '';
+        return $this->rawInput;
     }
 
     /**
@@ -370,13 +371,21 @@ class Request
     private function ipInCidr(string $ip, string $cidr): bool
     {
         [$subnet, $bits] = explode('/', $cidr, 2);
+        if (!is_numeric($bits)) {
+            return false;
+        }
         $bits = (int) $bits;
 
         // IPv6
         if (str_contains($ip, ':')) {
+            if ($bits < 0 || $bits > 128) {
+                return false;
+            }
             $ipBin     = inet_pton($ip);
             $subnetBin = inet_pton($subnet);
-            if ($ipBin === false || $subnetBin === false) return false;
+            if ($ipBin === false || $subnetBin === false || strlen($ipBin) !== strlen($subnetBin)) {
+                return false;
+            }
 
             $fullBytes = intdiv($bits, 8);
             $remBits   = $bits % 8;
@@ -389,6 +398,9 @@ class Request
         }
 
         // IPv4
+        if ($bits < 0 || $bits > 32) {
+            return false;
+        }
         $ipLong     = ip2long($ip);
         $subnetLong = ip2long($subnet);
         if ($ipLong === false || $subnetLong === false) return false;

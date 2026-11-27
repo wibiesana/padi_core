@@ -185,13 +185,22 @@ class Cache
      */
     private static function redisOp(callable $fn, string $op, mixed $fallback = null): mixed
     {
-        if (!self::ensureRedis()) {
+        if (self::$redis === null) {
             return $fallback;
         }
 
         try {
             return $fn();
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            // Reconnect once and retry on connection/socket failure
+            if (self::ensureRedis()) {
+                try {
+                    return $fn();
+                } catch (\Throwable $retryEx) {
+                    error_log("[padi] Redis {$op} error: " . $retryEx->getMessage());
+                    return $fallback;
+                }
+            }
             error_log("[padi] Redis {$op} error: " . $e->getMessage());
             return $fallback;
         }
@@ -313,7 +322,7 @@ class Cache
             mkdir($dir, 0750, true);
         }
 
-        $tmp = $file . '.tmp.' . getmypid();
+        $tmp = $file . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(4));
         $payload = json_encode(
             ['key' => $key, 'value' => $value, 'expires' => $expires],
             self::JSON_FLAGS,
@@ -323,7 +332,12 @@ class Cache
             return false;
         }
 
-        return rename($tmp, $file);
+        if (!@rename($tmp, $file)) {
+            @unlink($tmp);
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -333,11 +347,11 @@ class Cache
     {
         $file = self::filePath($key);
 
-        if (!file_exists($file)) {
+        if (!is_file($file)) {
             return $miss;
         }
 
-        $raw = file_get_contents($file);
+        $raw = @file_get_contents($file);
         if ($raw === false) {
             return $miss;
         }
@@ -413,7 +427,7 @@ class Cache
                     return $miss;
                 }
                 $value = json_decode($raw, true);
-                self::setMemory($key, $value, 0); // TTL managed by Redis
+                self::setMemory($key, $value, time() + self::$defaultTtl);
                 return $value;
             }, 'get', $miss);
 
@@ -530,7 +544,9 @@ class Cache
             return (bool) self::redisOp(fn () => self::$redis->flushdb(), 'clear', false);
         }
 
-        self::walkCacheFiles(self::$cacheDir, @unlink(...));
+        self::walkCacheFiles(self::$cacheDir, static function (string $path): void {
+            @unlink($path);
+        });
         return true;
     }
 

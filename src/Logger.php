@@ -73,7 +73,7 @@ class Logger
         $contextStr = $context ? ' ' . json_encode($context, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) : '';
         $formatted = sprintf("[%s] %s: %s%s\n", $datetime, strtoupper($level), $message, $contextStr);
 
-        $dateStr = date('Y-m-d');
+        $dateStr = substr($datetime, 0, 10);
         $appLogFile = self::$logDir . '/app-' . $dateStr . '.log';
         
         // Write to daily app log

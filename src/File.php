@@ -117,12 +117,12 @@ class File
         // Validate MIME type matches extension (defense in depth)
         if (function_exists('finfo_open')) {
             $finfo = finfo_open(FILEINFO_MIME_TYPE);
-            $mimeType = finfo_file($finfo, $file['tmp_name']);
-            finfo_close($finfo);
-
-            // Block PHP files disguised as other types
-            if (str_contains($mimeType, 'php') || str_contains($mimeType, 'x-httpd')) {
-                throw new Exception("File content type is not allowed");
+            if ($finfo !== false) {
+                $mimeType = finfo_file($finfo, $file['tmp_name']);
+                // Block PHP files disguised as other types
+                if (is_string($mimeType) && (str_contains($mimeType, 'php') || str_contains($mimeType, 'x-httpd'))) {
+                    throw new Exception("File content type is not allowed");
+                }
             }
         }
 
@@ -138,7 +138,7 @@ class File
         }
 
         // Generate secure random filename
-        $filename = bin2hex(random_bytes(16)) . '.' . $ext;
+        $filename = bin2hex(random_bytes(16)) . ($ext !== '' ? '.' . $ext : '');
         $targetFile = $targetDir . '/' . $filename;
 
         if (!move_uploaded_file($file['tmp_name'], $targetFile)) {
@@ -167,7 +167,7 @@ class File
             return false;
         }
 
-        if (!str_starts_with($realPath, $uploadsReal)) {
+        if (!str_starts_with($realPath, $uploadsReal . DIRECTORY_SEPARATOR)) {
             // Path traversal attempt detected
             return false;
         }

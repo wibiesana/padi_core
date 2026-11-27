@@ -429,7 +429,20 @@ class Query
         } elseif ($value === false) {
             $this->lock = null;
         } else {
-            $this->lock = trim((string)$value);
+            $normalized = strtoupper(trim((string)preg_replace('/\s+/', ' ', $value)));
+            $allowedLocks = [
+                'FOR UPDATE',
+                'FOR SHARE',
+                'FOR UPDATE NOWAIT',
+                'FOR UPDATE SKIP LOCKED',
+                'FOR SHARE NOWAIT',
+                'FOR SHARE SKIP LOCKED',
+                'LOCK IN SHARE MODE',
+            ];
+            if (!in_array($normalized, $allowedLocks, true)) {
+                throw new \InvalidArgumentException("Invalid SQL lock clause: '{$value}'");
+            }
+            $this->lock = $normalized;
         }
         return $this;
     }
@@ -948,8 +961,9 @@ class Query
 
         $set = [];
         foreach ($data as $column => $value) {
-            $paramName = ":upd_" . str_replace('.', '_', (string)$column);
-            $set[] = "{$column} = {$paramName}";
+            $safeCol = $this->sanitizeIdentifier((string)$column);
+            $paramName = ":upd_" . str_replace('.', '_', $safeCol);
+            $set[] = "{$safeCol} = {$paramName}";
             $this->params[$paramName] = $value;
         }
 
@@ -985,8 +999,9 @@ class Query
         $columns = [];
         $placeholders = [];
         foreach ($data as $column => $value) {
-            $columns[] = $column;
-            $paramName = ":ins_" . str_replace('.', '_', (string)$column);
+            $safeCol = $this->sanitizeIdentifier((string)$column);
+            $columns[] = $safeCol;
+            $paramName = ":ins_" . str_replace('.', '_', $safeCol);
             $placeholders[] = $paramName;
             $this->params[$paramName] = $value;
         }
@@ -1234,6 +1249,10 @@ class Query
             foreach ($condition as $column => $value) {
                 if (is_array($value)) {
                     // Automatic IN: ['id' => [1,2,3]]
+                    if (empty($value)) {
+                        $parts[] = '1 = 0';
+                        continue;
+                    }
                     $placeholders = [];
                     foreach ($value as $i => $v) {
                         $paramName = ":in_" . count($this->params) . "_{$i}";
@@ -1343,21 +1362,18 @@ class Query
 
             $middle = strtoupper((string)$condition[1]);
 
-            if (in_array($middle, $knownOps)) {
+            if (in_array($middle, $knownOps, true)) {
                 // Canonical format: [column, operator, value]
                 $column = $condition[0];
                 $op = $middle;
                 $value = $condition[2];
-            } elseif (in_array($first, $knownOps)) {
+            } elseif (in_array($first, $knownOps, true)) {
                 // Legacy format: [operator, column, value] (backward compatible)
                 $op = $first;
                 $column = $condition[1];
                 $value = $condition[2];
             } else {
-                // Unknown format, treat as [column, operator, value]
-                $column = $condition[0];
-                $op = $middle;
-                $value = $condition[2];
+                throw new \InvalidArgumentException("Unsupported SQL operator in condition.");
             }
 
             // LIKE / NOT LIKE — auto-% wrapping and PostgreSQL ILIKE conversion
@@ -1381,6 +1397,9 @@ class Query
             // IN / NOT IN
             if ($op === 'IN' || $op === 'NOT IN') {
                 if (is_array($value)) {
+                    if (empty($value)) {
+                        return $op === 'IN' ? '1 = 0' : '1 = 1';
+                    }
                     $placeholders = [];
                     foreach ($value as $i => $v) {
                         $paramName = ":in_" . count($this->params) . "_{$i}";
