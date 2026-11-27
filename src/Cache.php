@@ -709,4 +709,47 @@ class Cache
     {
         return count(self::$memory);
     }
+
+    /** Get active cache driver ('redis' or 'file'). */
+    public static function getDriver(): string
+    {
+        self::init();
+        return self::$driver ?? 'file';
+    }
+
+    /** Check whether Redis is the active driver and responds to PING. */
+    public static function isRedisConnected(): bool
+    {
+        self::init();
+
+        if (self::$driver !== 'redis' || self::$redis === null) {
+            return false;
+        }
+
+        try {
+            self::$redis->ping();
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Get cache health and driver status summary (useful for health endpoints).
+     *
+     * @return array{configured_driver: string, active_driver: string, redis_connected: bool, redis_client: ?string, l1_entries: int, l1_max_entries: int}
+     */
+    public static function getStatus(): array
+    {
+        self::init();
+
+        return [
+            'configured_driver' => (string) Env::get('CACHE_DRIVER', 'file'),
+            'active_driver'     => self::$driver ?? 'file',
+            'redis_connected'   => self::isRedisConnected(),
+            'redis_client'      => self::$redis instanceof \Redis ? 'ext-redis' : (self::$redis !== null ? 'predis' : null),
+            'l1_entries'        => count(self::$memory),
+            'l1_max_entries'    => self::$maxMemory,
+        ];
+    }
 }
