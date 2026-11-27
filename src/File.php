@@ -45,7 +45,40 @@ use Exception;
  */
 class File
 {
-    private static string $uploadDir = 'uploads';
+    private static ?string $uploadDir = null;
+
+    /**
+     * Override base upload directory (relative to PADI_ROOT).
+     * Pass null to reset back to UPLOAD_DIR env / 'uploads' default.
+     */
+    public static function setUploadDir(?string $dir): void
+    {
+        if ($dir === null) {
+            self::$uploadDir = null;
+            return;
+        }
+
+        $sanitized = self::sanitizePath($dir);
+        if ($sanitized === '') {
+            throw new \InvalidArgumentException('Upload directory cannot be empty.');
+        }
+
+        self::$uploadDir = $sanitized;
+    }
+
+    /**
+     * Get active base upload directory (relative to PADI_ROOT).
+     * Priority: File::setUploadDir() > UPLOAD_DIR env > 'uploads'.
+     */
+    public static function getUploadDir(): string
+    {
+        if (self::$uploadDir !== null) {
+            return self::$uploadDir;
+        }
+
+        $envDir = self::sanitizePath((string) Env::get('UPLOAD_DIR', 'uploads'));
+        return $envDir !== '' ? $envDir : 'uploads';
+    }
 
     /** @var array Dangerous file extensions (blacklist) */
     private const DANGEROUS_EXTENSIONS = [
@@ -127,7 +160,7 @@ class File
         }
 
         $root = defined('PADI_ROOT') ? PADI_ROOT : dirname(__DIR__, 4);
-        $baseDir = $root . '/' . self::$uploadDir;
+        $baseDir = $root . '/' . self::getUploadDir();
 
         // Sanitize subdirectory to prevent path traversal
         $subDir = self::sanitizePath($subDir);
@@ -156,12 +189,13 @@ class File
         $root = defined('PADI_ROOT') ? PADI_ROOT : dirname(__DIR__, 4);
 
         // Sanitize path to prevent traversal
+        $uploadDir = self::getUploadDir();
         $sanitized = self::sanitizePath($path);
-        $fullPath = $root . '/' . self::$uploadDir . '/' . $sanitized;
+        $fullPath = $root . '/' . $uploadDir . '/' . $sanitized;
 
         // Verify the resolved path is still within uploads directory
         $realPath = realpath($fullPath);
-        $uploadsReal = realpath($root . '/' . self::$uploadDir);
+        $uploadsReal = realpath($root . '/' . $uploadDir);
 
         if ($realPath === false || $uploadsReal === false) {
             return false;
@@ -201,7 +235,7 @@ class File
 
         $baseUrl   = self::resolveBaseUrl();
         $sanitized = self::sanitizePath($path);
-        return rtrim($baseUrl, '/') . '/' . self::$uploadDir . '/' . $sanitized;
+        return rtrim($baseUrl, '/') . '/' . self::getUploadDir() . '/' . $sanitized;
     }
 
     /**
